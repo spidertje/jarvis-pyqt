@@ -150,8 +150,18 @@ class PiperTTS:
             # Stream audio chunks
             while True:
                 event = await self._read_event()
+
+                # Read additional data
+                data_length = event.get("data_length", 0)
+                if data_length > 0:
+                    await self._reader.readexactly(data_length)
+
                 if event.get("type") == "audio-chunk":
-                    yield b""  # Simplified - would read payload here
+                    # Read payload (binary PCM)
+                    payload_length = event.get("payload_length", 0)
+                    if payload_length > 0:
+                        payload = await self._reader.readexactly(payload_length)
+                        yield payload
                 elif event.get("type") == "audio-stop":
                     break
                 else:
