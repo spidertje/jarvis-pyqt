@@ -10,6 +10,7 @@ Frameless, translucent window that renders:
 - Voice level bars
 - Floating particles with connections
 - State label
+- Face recognition overlay (name + confidence)
 
 Animated by QTimer at 60fps. Activity level drives color (cyan idle → amber speaking)
 and animation speed.
@@ -18,7 +19,7 @@ and animation speed.
 import math
 import random
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtCore import Qt, QTimer, QPointF
+from PyQt6.QtCore import Qt, QTimer, QPointF, pyqtSignal
 from PyQt6.QtGui import (
     QPainter, QColor, QPen, QRadialGradient, QFont,
     QPainterPath, QPolygonF,
@@ -74,6 +75,11 @@ class HUDOverlay(QWidget):
 
         # Wave rings (expand outward, fade)
         self._wave_rings = []
+
+        # Face recognition overlay
+        self._face_name = ""
+        self._face_confidence = 0.0
+        self._face_timer = 0  # fade out timer
 
         # Timer: 60fps
         self._timer = QTimer(self)
@@ -216,7 +222,10 @@ class HUDOverlay(QWidget):
         # 8. Particle connections
         self._draw_connections(p, act, hue, sat)
 
-        # 9. State label
+        # 9. Face recognition overlay
+        self._draw_face_overlay(p, cx, cy, act, hue, sat)
+
+        # 10. State label
         self._draw_state_label(p, cx, cy, act, hue, sat)
 
         p.end()
@@ -378,3 +387,76 @@ class HUDOverlay(QWidget):
         fnt.setBold(True)
         p.setFont(fnt)
         p.drawText(int(cx - 50), int(cy + 110), labels[self._state])
+
+    def _draw_face_overlay(self, p, cx, cy, act, hue, sat):
+        """Draw face recognition overlay (top-right corner)."""
+        if not self._face_name:
+            return
+
+        # Fade out after 3 seconds
+        self._face_timer += 0.016  # ~60fps
+        if self._face_timer > 3.0:
+            self.clear_face()
+            return
+
+        # Opacity: full for 2s, fade over next 1s
+        if self._face_timer < 2.0:
+            alpha = 255
+        else:
+            alpha = max(0, int(255 * (3.0 - self._face_timer)))
+
+        # Background pill
+        text = f"👤 {self._face_name}"
+        if self._face_confidence > 0:
+            text += f" ({self._face_confidence:.0f}%)"
+
+        fnt = p.font()
+        fnt.setPointSize(12)
+        fnt.setBold(True)
+        p.setFont(fnt)
+
+        # Measure text
+        metrics = p.fontMetrics()
+        text_w = metrics.horizontalAdvance(text)
+        pill_h = 28
+        pill_x = int(cx + 280)
+        pill_y = 20
+        pill_r = 14
+
+        # Glow effect
+        glow_pen = QPen(
+            self._color(182, 85, 70, int(alpha * 0.4)),
+            4,
+        )
+        glow_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(glow_pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(pill_x - 8, pill_y - 4, text_w + 16, pill_h + 8, pill_r + 4, pill_r + 4)
+
+        # Pill background
+        pill_bg = self._color(0, 0, 0, int(alpha * 0.7))
+        p.setBrush(pill_bg)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(pill_x, pill_y, text_w, pill_h, pill_r, pill_r)
+
+        # Pill border
+        border_color = self._color(182, 85, 60, int(alpha * 0.8))
+        p.setPen(QPen(border_color, 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(pill_x, pill_y, text_w, pill_h, pill_r, pill_r)
+
+        # Text
+        text_color = self._color(182, 85, 80, alpha)
+        p.setPen(QPen(text_color, 1))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawText(pill_x + 10, pill_y + pill_h - 6, text)
+
+    def set_face_detected(self, name: str, confidence: float = 0.0):
+        """Set the currently recognized face for overlay display."""
+        self._face_name = name
+        self._face_confidence = confidence
+
+    def clear_face(self):
+        """Clear face recognition overlay."""
+        self._face_name = ""
+        self._face_confidence = 0.0

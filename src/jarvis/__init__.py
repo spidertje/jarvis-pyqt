@@ -1,6 +1,6 @@
 """Jarvis Desktop - PyQt6 Arc Reactor HUD with face recognition and TTS/STT."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from .state import JarvisState
 from .hud_overlay import HUDOverlay
@@ -9,6 +9,7 @@ from .stt import WhisperSTT
 from .tts import PiperTTS
 from .audio_player import AudioPlayer, AudioConfig
 from .agent import JarvisAgent, AgentConfig
+from .face import FaceRecognizer, FaceConfig
 
 __all__ = [
     "JarvisState", "HUDOverlay",
@@ -16,4 +17,5 @@ __all__ = [
     "WhisperSTT", "PiperTTS",
     "AudioPlayer", "AudioConfig",
     "JarvisAgent", "AgentConfig",
+    "FaceRecognizer", "FaceConfig",
 ]

@@ -19,9 +19,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src
 import asyncio
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-    QLineEdit, QPushButton, QLabel, QFrame, QStatusBar,
+    QLineEdit, QPushButton, QLabel, QFrame,
 )
-from PyQt6.QtCore import Qt, QTimer, QSize
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPixmap, QPainter, QColor, QPen, QFont, QPalette
 
 from jarvis.hud_overlay import HUDOverlay
@@ -29,6 +29,78 @@ from jarvis.state import JarvisState
 from jarvis.agent import JarvisAgent, AgentConfig, ChatConfig
 from jarvis.stt import WyomingConfig as STTWyomingConfig
 from jarvis.tts import WyomingConfig as TTSWyomingConfig
+from jarvis.face import FaceConfig
+
+from PyQt6.QtCore import QThread, pyqtSignal
+import cv2
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class FaceRecThread(QThread):
+    """Face detection thread — runs OpenCV LBPH recognition loop."""
+
+    face_detected = pyqtSignal(str, float)  # name, confidence
+
+    def __init__(self, config: FaceConfig, parent=None):
+        super().__init__(parent)
+        self.config = config
+        self.recognizer = None
+        self.stop_flag = False
+        self.camera = None
+
+    def run(self):
+        """Run face detection loop."""
+        from jarvis.face import FaceRecognizer
+
+        # Load models from DB
+        self.recognizer = FaceRecognizer(self.config)
+        count = self.recognizer.load_models()
+        if count == 0:
+            logger.info("No face models loaded — face recognition disabled")
+
+        # Open camera
+        self.camera = cv2.VideoCapture(self.config.camera_index)
+        if not self.camera.isOpened():
+            logger.error(f"Failed to open camera {self.config.camera_index}")
+            return
+
+        logger.info(f"Face detection started on camera {self.config.camera_index}")
+
+        while not self.stop_flag:
+            ret, frame = self.camera.read()
+            if not ret:
+                continue
+
+            name = self.recognizer.recognize(frame)
+            if name:
+                # Get confidence for overlay
+                faces = self.recognizer.detect_faces(frame)
+                conf = 0.0
+                if faces:
+                    x, y, w, h = faces[0]
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    roi = gray[y:y + h, x:x + w]
+                    roi = cv2.resize(roi, self.config.resize_dims)
+                    if name in self.recognizer._models:
+                        model = self.recognizer._models[name]
+                        try:
+                            _, conf = model.predict(roi)
+                        except Exception:
+                            pass
+
+                self.face_detected.emit(name, conf)
+
+            self.msleep(100)  # 10fps detection loop
+
+        self.camera.release()
+        self.recognizer.close()
+
+    def stop(self):
+        """Stop the face detection thread."""
+        self.stop_flag = True
+        self.wait()
 
 
 class JarvisApp(QWidget):
@@ -53,6 +125,11 @@ class JarvisApp(QWidget):
             tts=TTSWyomingConfig(host="192.168.55.41", port=10200),
         ))
 
+        # Face recognition thread
+        face_config = FaceConfig(camera_index=0)
+        self.face_thread = FaceRecThread(face_config)
+        self.face_thread.face_detected.connect(self._on_face_detected)
+
         # UI controls (foreground layer)
         self._setup_ui()
 
@@ -65,6 +142,9 @@ class JarvisApp(QWidget):
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self._update_status)
         self._status_timer.start(500)
+
+        # Start face detection thread
+        self.face_thread.start()
 
         # Connect all services on startup
         asyncio.get_event_loop().run_until_complete(self._init_services())
@@ -192,6 +272,11 @@ class JarvisApp(QWidget):
             return
         self.status_label.setText("⏹ Standby")
 
+    def _on_face_detected(self, name: str, confidence: float):
+        """Handle face detection — update HUD overlay."""
+        self.hud.set_face_detected(name, confidence)
+        logger.info(f"Face detected: {name} ({confidence:.1f}%)")
+
     def _toggle_voice(self):
         """Toggle voice mode (listen → chat → speak loop)."""
         if self._running:
@@ -235,10 +320,17 @@ class JarvisApp(QWidget):
         self._running = False
         if self._voice_task:
             self._voice_task.cancel()
+
+        # Stop face detection thread
+        if hasattr(self, 'face_thread'):
+            self.face_thread.stop()
+
+        # Close all services
         try:
             asyncio.get_event_loop().run_until_complete(self.agent.close())
         except Exception:
             pass
+
         super().closeEvent(event)
 
 
