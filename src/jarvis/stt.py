@@ -61,6 +61,95 @@ class WhisperSTT:
             await self._writer.wait_closed()
         self._connected = False
 
+    def _is_silence(self, audio_data: bytes, threshold: float = 500) -> bool:
+        """Check if audio data is silence (RMS amplitude below threshold)."""
+        if len(audio_data) == 0:
+            return True
+        # Convert to numpy for RMS calculation
+        import numpy as np
+        samples = np.frombuffer(audio_data, dtype=np.int16)
+        rms = np.sqrt(np.mean(samples.astype(np.float64) ** 2))
+        return rms < threshold
+
+    async def listen(self, timeout: float = 5.0, silence_threshold: float = 500) -> Optional[str]:
+        """
+        Record audio from microphone and transcribe it.
+
+        Records for up to `timeout` seconds, or stops on silence detection.
+
+        Args:
+            timeout: Max recording time in seconds
+            silence_threshold: RMS amplitude threshold for silence detection
+
+        Returns:
+            Transcribed text or None on failure.
+        """
+        if not self._connected:
+            if not await self.connect():
+                return None
+
+        # Capture microphone audio using sounddevice
+        sd = self._get_sd()
+        if sd is None:
+            logger.warning("sounddevice not available for recording")
+            return None
+
+        # Record chunks, accumulating until silence or timeout
+        chunk_duration = 0.5  # seconds
+        chunk_size = int(self.config.sample_rate * chunk_duration)
+        accumulated = b""
+        silence_chunks = 0
+        max_silence_chunks = int(timeout / chunk_duration)
+
+        logger.info("Listening...")
+
+        try:
+            while True:
+                # Record a chunk from microphone
+                chunk = sd.rec(
+                    chunk_size,
+                    samplerate=self.config.sample_rate,
+                    channels=self.config.channels,
+                    dtype="int16",
+                    block=True,
+                )
+                if chunk is None:
+                    break
+
+                # Convert numpy array to bytes
+                chunk_bytes = chunk.tobytes()
+                accumulated += chunk_bytes
+
+                # Check for silence
+                if self._is_silence(chunk_bytes, silence_threshold):
+                    silence_chunks += 1
+                    if silence_chunks >= max_silence_chunks:
+                        logger.info(f"Silence detected after {len(accumulated) / self.config.width / self.config.sample_rate:.1f}s")
+                        break
+                else:
+                    silence_chunks = 0
+
+        except Exception as e:
+            logger.error(f"Recording error: {e}")
+            return None
+
+        if not accumulated:
+            logger.info("No audio captured")
+            return None
+
+        # Transcribe the accumulated audio
+        logger.info(f"Transcribing {len(accumulated) / self.config.width / self.config.sample_rate:.1f}s of audio...")
+        text = await self.transcribe(accumulated)
+        return text
+
+    def _get_sd(self):
+        """Get sounddevice module."""
+        try:
+            import sounddevice as sd
+            return sd
+        except ImportError:
+            return None
+
     def _send_event(self, event_type: str, data: dict = None):
         """Send a Wyoming protocol event."""
         event = {"type": event_type}

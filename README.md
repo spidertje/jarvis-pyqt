@@ -1,54 +1,71 @@
 # Jarvis Desktop
 
-PyQt6 desktop app with Arc Reactor HUD, face recognition, TTS/STT, and chat with Hermes Agent backend.
+PyQt6 Arc Reactor HUD with voice interaction.
 
-## Status
+## Stack
 
-- [x] Phase 1: Arc Reactor HUD overlay with state machine
-- [ ] Phase 2: TTS (piper) + STT (whisper)
-- [ ] Phase 3: Chat with Hermes backend
-- [ ] Phase 4: Face recognition (OpenCV LBPH + MariaDB)
-- [ ] Phase 5: Profile switching + polish
+- **HUD**: PyQt6 custom widget with Arc Reactor animation (60fps)
+- **STT**: Faster-whisper via Wyoming protocol (port 10300 on 192.168.55.41)
+- **TTS**: Piper via Wyoming protocol (port 10200 on 192.168.55.41)
+- **Chat**: OpenAI-compatible API (port 3001 on 192.168.55.43)
+- **Audio**: sounddevice for PCM playback
+
+## Phases
+
+1. **Phase 1** — Arc Reactor HUD overlay with state machine
+2. **Phase 2** — TTS/STT integration (piper + whisper via Wyoming)
+3. **Phase 3** — Chat with LLM backend + voice mode
+4. **Phase 4** — Face recognition (OpenCV LBPH + MariaDB)
+5. **Phase 5** — Profile switching + polish
 
 ## Requirements
 
-- Python 3.10+
-- PyQt6
-- opencv-contrib-python
-- pymysql
-- numpy
-- requests
-- (piper-tts, openai-whisper — Phase 2+)
+```
+pip install PyQt6 aiohttp numpy sounddevice
+```
 
-## Development
+## Usage
 
 ```bash
-# Create venv
-uv venv
-source .venv/bin/activate
-
-# Install deps
-uv pip install -e ".[dev]"
-
-# Run
-python -m src.main
+cd /opt/data/jarvis-pyqt
+python3 src/main.py
 ```
 
 ## Architecture
 
 ```
-src/
-├── main.py              # Entry point
-└── jarvis/
-    ├── __init__.py
-    ├── state.py         # State machine (IDLE, LISTENING, THINKING, SPEAKING)
-    ├── hud_overlay.py   # Arc Reactor HUD widget
-    ├── tts.py           # Piper TTS integration
-    ├── stt.py           # Whisper STT integration
-    ├── chat.py          # Hermes backend chat
-    └── face_recognition.py  # OpenCV face recognition
+┌─────────────────────────────────────────┐
+│  JarvisApp (QWidget)                    │
+│  ┌─────────────────────────────────┐    │
+│  │ HUDOverlay (background)         │    │
+│  │ - Arc Reactor animation         │    │
+│  │ - 60fps state machine           │    │
+│  └─────────────────────────────────┘    │
+│  ┌─────────────────────────────────┐    │
+│  │ Bottom bar: mic, status, input  │    │
+│  └─────────────────────────────────┘    │
+└─────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────┐
+│  JarvisAgent                            │
+│  STT → Chat → TTS                       │
+│  State: IDLE ↔ LISTENING → THINKING →   │
+│         SPEAKING → IDLE                 │
+└─────────────────────────────────────────┘
 ```
 
-## License
+## Services
 
-MIT
+| Service | Host | Port | Protocol |
+|---------|------|------|----------|
+| Piper TTS | 192.168.55.41 | 10200 | Wyoming |
+| Whisper STT | 192.168.55.41 | 10300 | Wyoming |
+| LLM API | 192.168.55.43 | 3001 | OpenAI |
+
+## Configuration
+
+Edit `src/main.py` → `JarvisApp.__init__()` → `AgentConfig()` for:
+- LLM endpoint (`ChatConfig`)
+- Wyoming hosts/ports (`STTWyomingConfig`, `TTSWyomingConfig`)
+- System prompt (`AgentConfig.system_prompt`)
