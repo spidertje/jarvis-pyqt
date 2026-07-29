@@ -30,6 +30,7 @@ from jarvis.agent import JarvisAgent, AgentConfig, ChatConfig
 from jarvis.stt import WyomingConfig as STTWyomingConfig
 from jarvis.tts import WyomingConfig as TTSWyomingConfig
 from jarvis.face import FaceConfig
+from jarvis.profile import ProfileManager, Profile
 
 from PyQt6.QtCore import QThread, pyqtSignal
 import cv2
@@ -273,9 +274,21 @@ class JarvisApp(QWidget):
         self.status_label.setText("⏹ Standby")
 
     def _on_face_detected(self, name: str, confidence: float):
-        """Handle face detection — update HUD overlay."""
-        self.hud.set_face_detected(name, confidence)
-        logger.info(f"Face detected: {name} ({confidence:.1f}%)")
+        """Handle face detection — switch to that profile, update HUD."""
+        # Switch profile if we have one for this person
+        profile = self.agent.profiles.get(name)
+        if profile:
+            if self.agent.switch_profile(name):
+                # Update HUD with profile name + accent color
+                self.hud.set_profile(profile.name, profile.accent_hue)
+                logger.info(f"Profile switched to: {profile.name}")
+            else:
+                self.hud.set_face_detected(name, confidence)
+                logger.warning(f"Could not switch to profile: {name}")
+        else:
+            # No profile for this person — just show face overlay
+            self.hud.set_face_detected(name, confidence)
+            logger.info(f"Face detected but no profile: {name}")
 
     def _toggle_voice(self):
         """Toggle voice mode (listen → chat → speak loop)."""

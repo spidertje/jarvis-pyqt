@@ -9,6 +9,7 @@ State machine:
 """
 
 import asyncio
+import json
 import logging
 import queue
 import threading
@@ -20,6 +21,7 @@ from .chat import ChatClient, ChatConfig
 from .stt import WhisperSTT, WyomingConfig as STTConfig
 from .tts import PiperTTS, WyomingConfig as TTSConfig
 from .audio_player import AudioPlayer, AudioConfig
+from .profile import ProfileManager, Profile
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +37,16 @@ class AgentConfig:
     tts: TTSConfig = field(default_factory=TTSConfig)
     # Audio
     audio: AudioConfig = field(default_factory=AudioConfig)
-    # STT silence timeout (seconds of silence to end listening)
+    # Profile manager
+    profile_db_host: str = "192.168.55.41"
+    profile_db_port: int = 3306
+    profile_db_user: str = "root"
+    profile_db_password: str = "rocklobster"
+    profile_db_name: str = "jarvis"
+    # STT silence timeout
     silence_timeout: float = 2.0
-    # System prompt for the LLM
-    system_prompt: str = "You are Jarvis, a helpful AI assistant. Respond concisely."
+    # Default system prompt (used when no profile is active)
+    default_system_prompt: str = "You are Jarvis, a helpful AI assistant."
 
 
 class JarvisAgent:
@@ -46,6 +54,7 @@ class JarvisAgent:
     Full Jarvis agent: STT → Chat → TTS.
 
     Drives the HUD state machine and manages the conversation flow.
+    Supports profile switching based on face recognition.
     """
 
     def __init__(self, config: Optional[AgentConfig] = None):
@@ -59,7 +68,25 @@ class JarvisAgent:
         self.tts = PiperTTS(self.config.tts)
         self.audio = AudioPlayer(self.config.audio)
 
-        # Conversation history
+        # Profile manager
+        self.profiles = ProfileManager(
+            db_host=self.config.profile_db_host,
+            db_port=self.config.profile_db_port,
+            db_user=self.config.profile_db_user,
+            db_password=self.config.profile_db_password,
+            db_name=self.config.profile_db_name,
+        )
+
+        # Load profiles
+        self.profiles.load_all()
+
+        # Active profile
+        self._active_profile: Optional[Profile] = None
+
+        # Current system prompt (may be overridden by profile)
+        self._system_prompt: str = self.config.default_system_prompt
+
+        # Conversation history (per profile)
         self._messages: List[Dict[str, str]] = []
 
     def on_state_change(self, callback: Callable):
@@ -74,6 +101,38 @@ class JarvisAgent:
             for cb in self._state_callbacks:
                 cb(new_state)
 
+    def get_system_prompt(self) -> str:
+        """Get the current system prompt (profile-specific or default)."""
+        return self._system_prompt
+
+    def switch_profile(self, name: str) -> bool:
+        """
+        Switch to a profile by name.
+
+        Loads the profile's system prompt and chat history.
+        """
+        if not self.profiles.switch(name):
+            return False
+
+        self._active_profile = self.profiles.get(name)
+        if self._active_profile:
+            self._system_prompt = self._active_profile.system_prompt
+            self._messages = list(self._active_profile.chat_history)
+            logger.info(
+                f"Profile switched to: {name} "
+                f"(prompt: {len(self._system_prompt)} chars, "
+                f"history: {len(self._messages)} messages)"
+            )
+        return True
+
+    def clear_profile(self):
+        """Clear active profile (return to default)."""
+        self.profiles.clear()
+        self._active_profile = None
+        self._system_prompt = self.config.default_system_prompt
+        self._messages = []
+        logger.info("Profile cleared, back to default")
+
     async def _run_voice(self):
         """Run voice loop: listen → think → speak."""
         while True:
@@ -87,11 +146,16 @@ class JarvisAgent:
             # Think (send to LLM)
             self._set_state(JarvisState.THINKING)
             self._messages.append({"role": "user", "content": text})
-            reply = await self.chat.chat(self._messages)
+            reply = await self.chat.chat(self._messages, system_prompt=self._system_prompt)
             if not reply:
                 self._set_state(JarvisState.IDLE)
                 continue
             self._messages.append({"role": "assistant", "content": reply})
+
+            # Save history to active profile
+            if self._active_profile:
+                self._active_profile.chat_history = list(self._messages)
+                self.profiles.save(self._active_profile)
 
             # Speak
             self._set_state(JarvisState.SPEAKING)
@@ -100,23 +164,27 @@ class JarvisAgent:
                 self.audio.play(audio)
             self._set_state(JarvisState.IDLE)
 
-    async def chat_text(self, user_text: str) -> str:
+    async def chat_text(self, user_text: str,
+                        system_prompt: Optional[str] = None) -> str:
         """
         Direct text chat (no voice). Returns the assistant's response text.
         """
         self._set_state(JarvisState.THINKING)
+        prompt = system_prompt or self._system_prompt
         self._messages.append({"role": "user", "content": user_text})
-        reply = await self.chat.chat(self._messages)
+        reply = await self.chat.chat(self._messages, system_prompt=prompt)
         if reply:
             self._messages.append({"role": "assistant", "content": reply})
         self._set_state(JarvisState.IDLE)
         return reply or ""
 
-    async def chat_text_and_speak(self, user_text: str) -> str:
+    async def chat_text_and_speak(self, user_text: str,
+                                  system_prompt: Optional[str] = None) -> str:
         """
         Text chat with TTS response.
         """
-        text = await self.chat_text(user_text)
+        prompt = system_prompt or self._system_prompt
+        text = await self.chat_text(user_text, system_prompt=prompt)
         if text:
             self._set_state(JarvisState.SPEAKING)
             audio = await self.tts.speak(text)
@@ -141,3 +209,4 @@ class JarvisAgent:
         await self.stt.disconnect()
         await self.tts.disconnect()
         self.audio.stop()
+        self.profiles.close()

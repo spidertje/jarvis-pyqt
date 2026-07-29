@@ -49,6 +49,7 @@ class ChatClient:
         self,
         messages: List[Dict[str, str]],
         stream: bool = False,
+        system_prompt: Optional[str] = None,
     ) -> Optional[str]:
         """
         Send chat messages and get a response.
@@ -56,15 +57,21 @@ class ChatClient:
         Args:
             messages: List of {"role": "user"|"assistant", "content": "..."}
             stream: If True, returns streamed token chunks via callback.
+            system_prompt: Optional system prompt to prepend.
 
         Returns:
             Complete text response, or None on failure.
         """
         session = await self._get_session()
 
+        # Build messages list with optional system prompt
+        chat_messages = list(messages)
+        if system_prompt:
+            chat_messages.insert(0, {"role": "system", "content": system_prompt})
+
         payload = {
             "model": self.config.model,
-            "messages": messages,
+            "messages": chat_messages,
             "temperature": self.config.temperature,
             "stream": stream,
         }

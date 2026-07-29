@@ -81,6 +81,10 @@ class HUDOverlay(QWidget):
         self._face_confidence = 0.0
         self._face_timer = 0  # fade out timer
 
+        # Active profile
+        self._profile_name: str = ""
+        self._profile_hue: int = 182  # Default cyan
+
         # Timer: 60fps
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -189,8 +193,11 @@ class HUDOverlay(QWidget):
         cx, cy = self._cx, self._cy
         act = self._activity
 
-        # Color: cyan (idle) → green (thinking) → amber (speaking)
-        if act < 0.4:
+        # Color: profile hue overrides default cyan when active
+        if self._profile_name:
+            hue = self._profile_hue
+            sat = 85
+        elif act < 0.4:
             hue = 182  # cyan
         elif act > 0.7:
             hue = 45   # amber
@@ -386,6 +393,14 @@ class HUDOverlay(QWidget):
         fnt.setPointSize(11)
         fnt.setBold(True)
         p.setFont(fnt)
+
+        # Show profile name above state label if active
+        if self._profile_name:
+            profile_text = f"👤 {self._profile_name}"
+            profile_pen = QPen(self._color(hue, sat, 90, 200), 1)
+            p.setPen(profile_pen)
+            p.drawText(int(cx - 40), int(cy + 95), profile_text)
+
         p.drawText(int(cx - 50), int(cy + 110), labels[self._state])
 
     def _draw_face_overlay(self, p, cx, cy, act, hue, sat):
@@ -460,3 +475,13 @@ class HUDOverlay(QWidget):
         """Clear face recognition overlay."""
         self._face_name = ""
         self._face_confidence = 0.0
+
+    def set_profile(self, name: str, hue: int = 182):
+        """Set active profile — updates name display and reactor accent."""
+        self._profile_name = name
+        self._profile_hue = hue
+
+    def clear_profile(self):
+        """Clear active profile."""
+        self._profile_name = ""
+        self._profile_hue = 182
