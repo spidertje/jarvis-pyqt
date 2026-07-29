@@ -11,6 +11,7 @@ State machine:
 import asyncio
 import json
 import logging
+import os
 import queue
 import threading
 from dataclasses import dataclass, field
@@ -45,7 +46,7 @@ class AgentConfig:
     profile_db_name: str = os.environ.get("JARVIS_DB_NAME", "jarvis")
     # LLM API
     llm_base_url: str = os.environ.get("JARVIS_LLM_URL", "http://192.168.55.179:8642/v1")
-    llm_api_key: str = os.environ.get("JARVIS_LLM_API_KEY", "")
+    llm_api_key: str = os.environ.get("JARVIS_LLM_API_KEY", "1111111111")
     llm_model: str = os.environ.get("JARVIS_LLM_MODEL", "auto")
     # STT silence timeout
     silence_timeout: float = 2.0

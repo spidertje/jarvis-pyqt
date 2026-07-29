@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class ChatConfig:
     """LLM endpoint configuration."""
     base_url: str = "http://192.168.55.179:8642/v1"
-    api_key: str = os.environ.get("JARVIS_LLM_API_KEY", "")
+    api_key: str = os.environ.get("JARVIS_LLM_API_KEY", "1111111111")
     model: str = "auto"
     temperature: float = 0.7
     max_tokens: int = 1024
