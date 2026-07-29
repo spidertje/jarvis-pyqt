@@ -1,3 +1,14 @@
+-- Face model table for jarvis-vision / face recognition
+-- Stored in MariaDB jarvis database (192.168.55.41:3306)
+
+CREATE TABLE IF NOT EXISTS face_model (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    model BLOB NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
 -- Profiles table for Jarvis face recognition + profile switching
 -- Stored in MariaDB jarvis database (192.168.55.41:3306)
 

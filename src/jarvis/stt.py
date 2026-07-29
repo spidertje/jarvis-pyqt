@@ -13,7 +13,6 @@ Protocol:
 
 import asyncio
 import json
-import struct
 import logging
 from dataclasses import dataclass
 from typing import Optional, AsyncIterator
@@ -226,44 +225,3 @@ class WhisperSTT:
             self._connected = False
             return None
 
-    async def listen_stream(self) -> AsyncIterator[bytes]:
-        """
-        Stream audio from microphone via Wyoming protocol.
-        
-        Yields raw PCM audio chunks.
-        """
-        if not self._connected:
-            if not await self.connect():
-                return
-
-        try:
-            # Send START command
-            start_cmd = {"start": {}}
-            self._writer.write(json.dumps(start_cmd).encode() + b"\n")
-            await self._writer.drain()
-
-            # Stream audio data
-            while True:
-                try:
-                    length_data = await self._reader.readexactly(8)
-                    if len(length_data) < 8:
-                        break
-                    
-                    length = struct.unpack("<Q", length_data)[0]
-                    if length == 0:
-                        break
-                    
-                    audio_data = await self._reader.readexactly(length)
-                    yield audio_data
-
-                except asyncio.IncompleteReadError:
-                    break
-
-            # Stop command
-            stop_cmd = {"stop": {}}
-            self._writer.write(json.dumps(stop_cmd).encode() + b"\n")
-            await self._writer.drain()
-
-        except Exception as e:
-            logger.error(f"Whisper STT stream error: {e}")
-            self._connected = False

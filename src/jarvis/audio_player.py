@@ -40,7 +40,8 @@ class AudioPlayer:
             import sounddevice as sd
             self._sd = sd
             devices = sd.query_devices()
-            dev_name = devices[self.config.device or 0]["name"]
+            dev_index = self.config.device if self.config.device is not None else 0
+            dev_name = devices[dev_index]["name"]
             logger.info(f"Audio device: {dev_name}")
         except ImportError:
             logger.warning("sounddevice not installed — audio playback disabled")

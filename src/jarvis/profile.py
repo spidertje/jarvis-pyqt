@@ -9,6 +9,7 @@ When a face is recognized, switch to that person's profile:
 Profiles stored in MariaDB `jarvis` DB `profiles` table.
 """
 
+import os
 import logging
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict
@@ -55,13 +56,13 @@ class Profile:
 class ProfileManager:
     """Manage profiles: load, switch, save."""
 
-    def __init__(self, db_host="192.168.55.41", db_port=3306,
-                 db_user="root", db_password="rocklobster", db_name="jarvis"):
-        self.db_host = db_host
-        self.db_port = db_port
-        self.db_user = db_user
-        self.db_password = db_password
-        self.db_name = db_name
+    def __init__(self, db_host=None, db_port=None,
+                 db_user=None, db_password=None, db_name=None):
+        self.db_host = db_host or os.environ.get("JARVIS_DB_HOST", "192.168.55.41")
+        self.db_port = db_port if db_port is not None else int(os.environ.get("JARVIS_DB_PORT", "3306"))
+        self.db_user = db_user or os.environ.get("JARVIS_DB_USER", "root")
+        self.db_password = db_password or os.environ.get("JARVIS_DB_PASSWORD", "")
+        self.db_name = db_name or os.environ.get("JARVIS_DB_NAME", "jarvis")
         self._db = None
         self._profiles: Dict[str, Profile] = {}
         self._active_name: Optional[str] = None

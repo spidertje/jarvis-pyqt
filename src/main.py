@@ -35,8 +35,38 @@ from jarvis.profile import ProfileManager, Profile
 from PyQt6.QtCore import QThread, pyqtSignal
 import cv2
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
+
+
+class EventLoopThread(QThread):
+    """Run an asyncio event loop in a background thread."""
+
+    def __init__(self):
+        super().__init__()
+        self._loop = None
+        self._stop = False
+
+    def run(self):
+        """Start asyncio event loop in this thread."""
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        logger.info("Async event loop started in background thread")
+        try:
+            self._loop.run_forever()
+        finally:
+            self._loop.close()
+
+    def stop(self):
+        """Stop the event loop."""
+        if self._loop and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        self.wait()
+
+    @property
+    def loop(self):
+        return self._loop
 
 
 class FaceRecThread(QThread):
@@ -116,15 +146,9 @@ class JarvisApp(QWidget):
         self.hud.move(0, 0)
 
         # Agent
-        self.agent = JarvisAgent(AgentConfig(
-            chat=ChatConfig(
-                base_url="http://192.168.55.179:8642/v1",
-                api_key="freellmapi",
-                model="auto",
-            ),
-            stt=STTWyomingConfig(host="192.168.55.41", port=10300),
-            tts=TTSWyomingConfig(host="192.168.55.41", port=10200),
-        ))
+        # Build agent config (env vars override defaults)
+        agent_config = AgentConfig()
+        self.agent = JarvisAgent(agent_config)
 
         # Face recognition thread
         face_config = FaceConfig(camera_index=0)
@@ -142,13 +166,18 @@ class JarvisApp(QWidget):
         self._voice_task = None
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self._update_status)
-        self._status_timer.start(500)
+        self._status_timer.start(1000)
+
+        self._last_status_state = None
 
         # Start face detection thread
         self.face_thread.start()
 
-        # Connect all services on startup
-        asyncio.get_event_loop().run_until_complete(self._init_services())
+        # Connect all services on startup (async via background loop)
+        if self.event_loop_thread.loop:
+            asyncio.ensure_future(self._init_services(), loop=self.event_loop_thread.loop)
+        else:
+            print("Warning: async event loop not available")
 
     def _setup_ui(self):
         """Set up the foreground UI controls."""
@@ -268,10 +297,12 @@ class JarvisApp(QWidget):
         )
 
     def _update_status(self):
-        """Periodically update status display."""
-        if self.agent.state != JarvisState.IDLE:
+        """Update status only when state changes."""
+        if self._last_status_state == self.agent.state:
             return
-        self.status_label.setText("⏹ Standby")
+        self._last_status_state = self.agent.state
+        if self.agent.state == JarvisState.IDLE:
+            self.status_label.setText("⏹ Standby")
 
     def _on_face_detected(self, name: str, confidence: float):
         """Handle face detection — switch to that profile, update HUD."""
@@ -305,7 +336,10 @@ class JarvisApp(QWidget):
             self._running = True
             self.mic_btn.setText("⏹")
             self.status_label.setText("Listening...")
-            self._voice_task = asyncio.ensure_future(self._voice_loop())
+            if self.event_loop_thread.loop:
+                self._voice_task = asyncio.ensure_future(self._voice_loop(), loop=self.event_loop_thread.loop)
+            else:
+                print("Error: async event loop not available")
 
     async def _voice_loop(self):
         """Main voice loop."""
@@ -338,9 +372,18 @@ class JarvisApp(QWidget):
         if hasattr(self, 'face_thread'):
             self.face_thread.stop()
 
+        # Stop event loop thread
+        if hasattr(self, 'event_loop_thread'):
+            self.event_loop_thread.stop()
+
         # Close all services
         try:
-            asyncio.get_event_loop().run_until_complete(self.agent.close())
+            if self.event_loop_thread.loop:
+                asyncio.get_event_loop().run_until_complete(self.agent.close())
+            else:
+                # Fallback: run sync close
+                import asyncio as _ai
+                _ai.run(self.agent.close())
         except Exception:
             pass
 
@@ -348,6 +391,13 @@ class JarvisApp(QWidget):
 
 
 def main():
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+        datefmt='%H:%M:%S',
+    )
+
     app = QApplication(sys.argv)
     app.setApplicationName("Jarvis")
     app.setOrganizationName("Jarvis")

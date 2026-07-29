@@ -6,6 +6,7 @@ Talks to any OpenAI-format LLM endpoint (local Ollama, LM Studio, Hindsight, etc
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 class ChatConfig:
     """LLM endpoint configuration."""
     base_url: str = "http://192.168.55.179:8642/v1"
-    api_key: str = "freellmapi"
+    api_key: str = os.environ.get("JARVIS_LLM_API_KEY", "")
     model: str = "auto"
     temperature: float = 0.7
     max_tokens: int = 1024

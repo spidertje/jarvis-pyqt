@@ -61,7 +61,7 @@ python3 src/main.py
 |---------|------|------|----------|
 | Piper TTS | 192.168.55.41 | 10200 | Wyoming |
 | Whisper STT | 192.168.55.41 | 10300 | Wyoming |
-| LLM API | 192.168.55.43 | 3001 | OpenAI |
+| LLM API | 192.168.55.179 | 8642 | OpenAI |
 
 ## Configuration
 

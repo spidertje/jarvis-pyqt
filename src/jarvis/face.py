@@ -54,6 +54,13 @@ class FaceRecognizer:
 
     def __init__(self, config: Optional[FaceConfig] = None):
         self.config = config or FaceConfig()
+        # Face config uses env or defaults
+        if self.config.db_host is None:
+            self.config.db_host = os.environ.get("JARVIS_DB_HOST", "192.168.55.41")
+        if self.config.db_user is None:
+            self.config.db_user = os.environ.get("JARVIS_DB_USER", "root")
+        if self.config.db_password is None:
+            self.config.db_password = os.environ.get("JARVIS_DB_PASSWORD", "")
         self._models: Dict[str, cv2.face.LBPHFaceRecognizer] = {}
         self._last_recognition: Dict[str, float] = {}  # name -> last recognition time
         self._db = None
