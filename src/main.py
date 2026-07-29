@@ -150,6 +150,10 @@ class JarvisApp(QWidget):
         agent_config = AgentConfig()
         self.agent = JarvisAgent(agent_config)
 
+        # Start async event loop in background thread
+        self.event_loop_thread = EventLoopThread()
+        self.event_loop_thread.start()
+
         # Face recognition thread
         face_config = FaceConfig(camera_index=0)
         self.face_thread = FaceRecThread(face_config)
