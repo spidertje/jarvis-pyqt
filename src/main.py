@@ -45,7 +45,7 @@ class JarvisApp(QWidget):
         # Agent
         self.agent = JarvisAgent(AgentConfig(
             chat=ChatConfig(
-                base_url="http://192.168.55.43:3001/v1",
+                base_url="http://192.168.55.179:8642/v1",
                 api_key="freellmapi",
                 model="auto",
             ),

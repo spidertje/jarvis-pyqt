@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ChatConfig:
     """LLM endpoint configuration."""
-    base_url: str = "http://192.168.55.43:3001/v1"
+    base_url: str = "http://192.168.55.179:8642/v1"
     api_key: str = "freellmapi"
     model: str = "auto"
     temperature: float = 0.7
