@@ -684,12 +684,21 @@ class SettingsDialog(QDialog):
             if audio_config:
                 audio_config.device = values.get("audio_device", audio_config.device)
 
+            # Silence timeout
+            stt_config = self.agent_config.stt
+            if stt_config and hasattr(self, 'silence_spin'):
+                self.agent_config.silence_timeout = float(self.silence_spin.value())
+
             # DB
             self.agent_config.profile_db_host = values.get("db_host", self.agent_config.profile_db_host)
             self.agent_config.profile_db_port = values.get("db_port", self.agent_config.profile_db_port)
             self.agent_config.profile_db_name = values.get("db_name", self.agent_config.profile_db_name)
             self.agent_config.profile_db_user = values.get("db_user", self.agent_config.profile_db_user)
             self.agent_config.profile_db_password = values.get("db_password", self.agent_config.profile_db_password)
+
+            # TTS voice model (stored as custom attr since WyomingConfig doesn't have it)
+            if hasattr(self, 'voice_field') and self.agent_config:
+                self.agent_config._tts_voice = self.voice_field.text()
 
             # Face — just update the face_config object (caller handles restart)
             if self.face_config:

@@ -14,6 +14,7 @@ Protocol:
 import asyncio
 import json
 import logging
+import numpy as np
 from dataclasses import dataclass
 from typing import Optional
 
@@ -39,16 +40,22 @@ class WhisperSTT:
         self._writer: Optional[asyncio.StreamWriter] = None
         self._connected = False
 
-    async def connect(self) -> bool:
+    async def connect(self, timeout: float = 5.0) -> bool:
         """Connect to faster-whisper via Wyoming protocol."""
         try:
-            self._reader, self._writer = await asyncio.open_connection(
-                self.config.host,
-                self.config.port
+            self._reader, self._writer = await asyncio.wait_for(
+                asyncio.open_connection(
+                    self.config.host,
+                    self.config.port
+                ),
+                timeout=timeout,
             )
             self._connected = True
             logger.info(f"Connected to faster-whisper STT at {self.config.host}:{self.config.port}")
             return True
+        except asyncio.TimeoutError:
+            logger.error(f"Connection timeout to faster-whisper at {self.config.host}:{self.config.port}")
+            return False
         except Exception as e:
             logger.error(f"Failed to connect to faster-whisper: {e}")
             return False
@@ -64,8 +71,6 @@ class WhisperSTT:
         """Check if audio data is silence (RMS amplitude below threshold)."""
         if len(audio_data) == 0:
             return True
-        # Convert to numpy for RMS calculation
-        import numpy as np
         samples = np.frombuffer(audio_data, dtype=np.int16)
         rms = np.sqrt(np.mean(samples.astype(np.float64) ** 2))
         return rms < threshold

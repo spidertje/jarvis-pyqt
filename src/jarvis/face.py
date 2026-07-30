@@ -32,13 +32,13 @@ logger = logging.getLogger(__name__)
 class FaceConfig:
     """Face recognition configuration."""
     camera_index: int = 0
-    db_host: str = "192.168.55.41"
+    db_host: Optional[str] = None  # set via JARVIS_DB_HOST or FaceRecognizer.__init__
     db_port: int = 3306
-    db_user: str = "root"
-    db_password: str = "rocklobster"
-    db_name: str = "jarvis"
+    db_user: Optional[str] = None
+    db_password: Optional[str] = None  # set via JARVIS_DB_PASSWORD env var
+    db_name: Optional[str] = None
     cascade_path: Optional[str] = None  # None = use OpenCV default
-    confidence_threshold: float = 80.0  # LBPH threshold (lower = stricter)
+    confidence_threshold: float = 80.0  # LBPH distance threshold (lower = stricter)
     debounce_seconds: float = 2.0  # minimum time between same-name recognitions
     min_faces_to_add: int = 20  # min samples needed to train
     resize_dims: tuple = (100, 100)  # resize faces to these dims for LBPH
@@ -54,13 +54,15 @@ class FaceRecognizer:
 
     def __init__(self, config: Optional[FaceConfig] = None):
         self.config = config or FaceConfig()
-        # Face config uses env or defaults
+        # Resolve None values from env vars (no hardcoded fallbacks)
         if self.config.db_host is None:
-            self.config.db_host = os.environ.get("JARVIS_DB_HOST", "192.168.55.41")
+            self.config.db_host = os.environ.get("JARVIS_DB_HOST")
         if self.config.db_user is None:
-            self.config.db_user = os.environ.get("JARVIS_DB_USER", "root")
+            self.config.db_user = os.environ.get("JARVIS_DB_USER")
         if self.config.db_password is None:
-            self.config.db_password = os.environ.get("JARVIS_DB_PASSWORD", "")
+            self.config.db_password = os.environ.get("JARVIS_DB_PASSWORD")
+        if self.config.db_name is None:
+            self.config.db_name = os.environ.get("JARVIS_DB_NAME")
         self._models: Dict[str, cv2.face.LBPHFaceRecognizer] = {}
         self._last_recognition: Dict[str, float] = {}  # name -> last recognition time
         self._db = None
@@ -69,12 +71,17 @@ class FaceRecognizer:
     def _get_db(self) -> pymysql.Connection:
         """Get or create MariaDB connection."""
         if self._db is None or self._db.closed:
+            if self.config.db_host is None or self.config.db_user is None:
+                raise RuntimeError(
+                    "DB host and user must be configured via env vars "
+                    "(JARVIS_DB_HOST, JARVIS_DB_USER) or FaceConfig"
+                )
             self._db = pymysql.connect(
                 host=self.config.db_host,
                 port=self.config.db_port,
                 user=self.config.db_user,
-                password=self.config.db_password,
-                database=self.config.db_name,
+                password=self.config.db_password or "",
+                database=self.config.db_name or "jarvis",
                 cursorclass=pymysql.cursors.DictCursor,
             )
         return self._db
@@ -232,9 +239,11 @@ class FaceRecognizer:
 
     def add_face(self, name: str, frame: np.ndarray) -> bool:
         """
-        Train a face model from a single frame.
+        Collect a face sample for a person.
 
-        For best results, call this multiple times with different angles.
+        Samples are stored in a separate `face_samples` table. Call this multiple
+        times with different angles/lighting, then call retrain_face(name) to
+        train the LBPH model from all collected samples.
         """
         faces = self.detect_faces(frame)
         if not faces:
@@ -242,50 +251,108 @@ class FaceRecognizer:
             return False
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        x, y, w, h = faces[0]  # Use first detected face
+        x, y, w, h = faces[0]
 
         roi = gray[y:y + h, x:x + w]
         roi = cv2.resize(roi, self.config.resize_dims)
 
-        # Get or create model
+        # Serialize ROI for DB storage
+        sample_blob = self._serialize_roi(roi)
+        if not sample_blob:
+            logger.error("Failed to serialize face sample")
+            return False
+
+        # Store sample in DB
         db = self._get_db()
         with db.cursor() as cur:
-            cur.execute("SELECT id FROM face_model WHERE name = %s", (name,))
-            row = cur.fetchone()
-
-            if row:
-                # Update existing model
-                model = cv2.face.LBPHFaceRecognizer_create()
-                model.read("/dev/null")  # placeholder
-                try:
-                    model.update([roi], [0])
-                except Exception:
-                    # Model already trained, can't update
-                    logger.warning(f"Cannot update model for {name} (already trained)")
-                    return False
-
-                # Serialize and save
-                model_blob = self._save_model_blob(model)
-                cur.execute(
-                    "UPDATE face_model SET model = %s WHERE name = %s",
-                    (model_blob, name),
-                )
-            else:
-                # Create new model
-                model = cv2.face.LBPHFaceRecognizer_create()
-                model.train([roi], [0])
-
-                model_blob = self._save_model_blob(model)
-                cur.execute(
-                    "INSERT INTO face_model (name, model) VALUES (%s, %s)",
-                    (name, model_blob),
-                )
-
+            cur.execute(
+                "INSERT INTO face_samples (name, sample, created_at) VALUES (%s, %s, NOW())",
+                (name, sample_blob),
+            )
             db.commit()
 
-        # Reload models to include new/updated model
-        self.load_models()
+        count = self._get_sample_count(name)
+        logger.info(f"Added face sample for {name} ({count} total)")
         return True
+
+    def _serialize_roi(self, roi: np.ndarray) -> bytes:
+        """Serialize a face ROI to bytes for DB storage."""
+        try:
+            _, buf = cv2.imencode(".png", roi)
+            return buf.tobytes()
+        except Exception as e:
+            logger.error(f"Failed to serialize ROI: {e}")
+            return b""
+
+    def _deserialize_roi(self, blob: bytes) -> Optional[np.ndarray]:
+        """Deserialize a face ROI from DB bytes."""
+        try:
+            arr = np.frombuffer(blob, dtype=np.uint8)
+            return cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+        except Exception as e:
+            logger.error(f"Failed to deserialize ROI: {e}")
+            return None
+
+    def _get_sample_count(self, name: str) -> int:
+        """Count stored samples for a person."""
+        try:
+            db = self._get_db()
+            with db.cursor() as cur:
+                cur.execute("SELECT COUNT(*) as cnt FROM face_samples WHERE name = %s", (name,))
+                return cur.fetchone()["cnt"]
+        except Exception:
+            return 0
+
+    def retrain_face(self, name: str) -> bool:
+        """
+        Retrain LBPH model from all stored samples for a person.
+
+        Requires face_samples table to exist with (name, sample) columns.
+        """
+        if name not in self._models:
+            logger.error(f"No existing model for {name}")
+            return False
+
+        try:
+            db = self._get_db()
+            with db.cursor() as cur:
+                cur.execute("SELECT sample FROM face_samples WHERE name = %s ORDER BY id", (name,))
+                rows = cur.fetchall()
+
+            if not rows:
+                logger.warning(f"No samples found for {name}")
+                return False
+
+            samples = []
+            labels = []
+            for i, row in enumerate(rows):
+                roi = self._deserialize_roi(row["sample"])
+                if roi is not None:
+                    samples.append(roi)
+                    labels.append(i)
+
+            if not samples:
+                logger.warning(f"No valid samples for {name}")
+                return False
+
+            logger.info(f"Retraining model for {name} with {len(samples)} samples")
+            new_model = cv2.face.LBPHFaceRecognizer_create()
+            new_model.train(samples, np.array(labels))
+
+            # Save to DB
+            model_blob = self._save_model_blob(new_model)
+            with db.cursor() as cur:
+                cur.execute("UPDATE face_model SET model = %s WHERE name = %s", (model_blob, name))
+                db.commit()
+
+            # Reload all models
+            self.load_models()
+            logger.info(f"Model retrained for {name}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to retrain model for {name}: {e}")
+            return False
 
     def _save_model_blob(self, model: cv2.face.LBPHFaceRecognizer) -> bytes:
         """Serialize an LBPH model to bytes for DB storage."""

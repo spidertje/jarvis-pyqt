@@ -37,7 +37,6 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import QMenu, QAction
 import cv2
 import logging
-import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +133,17 @@ class FaceRecThread(QThread):
         """Stop the face detection thread."""
         self.stop_flag = True
         self.wait()
+        # Clean up resources (safe even if camera/open failed)
+        if self.camera is not None:
+            try:
+                self.camera.release()
+            except Exception:
+                pass
+        if self.recognizer is not None:
+            try:
+                self.recognizer.close()
+            except Exception:
+                pass
 
 
 class JarvisApp(QWidget):
@@ -170,18 +180,13 @@ class JarvisApp(QWidget):
         # Background tasks
         self._running = False
         self._voice_task = None
-        self._status_timer = QTimer(self)
-        self._status_timer.timeout.connect(self._update_status)
-        self._status_timer.start(1000)
-
-        self._last_status_state = None
 
         # Start face detection thread
         self.face_thread.start()
 
         # Connect all services on startup (async via background loop)
         if self.event_loop_thread.loop:
-            asyncio.ensure_future(self._init_services(), loop=self.event_loop_thread.loop)
+            self.event_loop_thread.loop.create_task(self._init_services())
         else:
             print("Warning: async event loop not available")
 
@@ -310,24 +315,15 @@ class JarvisApp(QWidget):
 
     def _on_state_change(self, state: JarvisState):
         """Update UI on state change."""
-        self.status_label.setText(state.label)
         state_colors = {
-            JarvisState.IDLE: "rgba(0, 200, 255, 200)",
-            JarvisState.LISTENING: "rgba(0, 255, 100, 220)",
-            JarvisState.THINKING: "rgba(200, 200, 0, 220)",
-            JarvisState.SPEAKING: "rgba(255, 150, 0, 220)",
+            JarvisState.IDLE: ("⏹ Standby", "rgba(0, 200, 255, 200)"),
+            JarvisState.LISTENING: ("🎙 Listening...", "rgba(0, 255, 100, 220)"),
+            JarvisState.THINKING: ("🤔 Thinking...", "rgba(200, 200, 0, 220)"),
+            JarvisState.SPEAKING: ("🔊 Speaking...", "rgba(255, 150, 0, 220)"),
         }
-        self.status_label.setStyleSheet(
-            f"color: {state_colors.get(state, 'white')}; font-size: 14px;"
-        )
-
-    def _update_status(self):
-        """Update status only when state changes."""
-        if self._last_status_state == self.agent.state:
-            return
-        self._last_status_state = self.agent.state
-        if self.agent.state == JarvisState.IDLE:
-            self.status_label.setText("⏹ Standby")
+        text, color = state_colors.get(state, ("?", "white"))
+        self.status_label.setText(text)
+        self.status_label.setStyleSheet(f"color: {color}; font-size: 14px;")
 
     def _on_face_detected(self, name: str, confidence: float):
         """Handle face detection — switch to that profile, update HUD."""
@@ -388,7 +384,7 @@ class JarvisApp(QWidget):
             self.mic_btn.setText("⏹")
             self.status_label.setText("Listening...")
             if self.event_loop_thread.loop:
-                self._voice_task = asyncio.ensure_future(self._voice_loop(), loop=self.event_loop_thread.loop)
+                self._voice_task = self.event_loop_thread.loop.create_task(self._voice_loop())
             else:
                 print("Error: async event loop not available")
 
@@ -435,8 +431,8 @@ class JarvisApp(QWidget):
                 # Fallback: run sync close
                 import asyncio as _ai
                 _ai.run(self.agent.close())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Error during shutdown: {e}")
 
         super().closeEvent(event)
 

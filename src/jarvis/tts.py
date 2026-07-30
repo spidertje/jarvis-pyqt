@@ -39,16 +39,22 @@ class PiperTTS:
         self._writer: Optional[asyncio.StreamWriter] = None
         self._connected = False
 
-    async def connect(self) -> bool:
+    async def connect(self, timeout: float = 5.0) -> bool:
         """Connect to Piper via Wyoming protocol."""
         try:
-            self._reader, self._writer = await asyncio.open_connection(
-                self.config.host,
-                self.config.port
+            self._reader, self._writer = await asyncio.wait_for(
+                asyncio.open_connection(
+                    self.config.host,
+                    self.config.port
+                ),
+                timeout=timeout,
             )
             self._connected = True
             logger.info(f"Connected to Piper TTS at {self.config.host}:{self.config.port}")
             return True
+        except asyncio.TimeoutError:
+            logger.error(f"Connection timeout to Piper at {self.config.host}:{self.config.port}")
+            return False
         except Exception as e:
             logger.error(f"Failed to connect to Piper TTS: {e}")
             return False

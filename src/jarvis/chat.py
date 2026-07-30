@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ChatConfig:
     """LLM endpoint configuration."""
-    base_url: str = "http://192.168.55.179:8642/v1"
-    api_key: str = os.environ.get("JARVIS_LLM_API_KEY", "1111111111")
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
     model: str = "auto"
     temperature: float = 0.7
     max_tokens: int = 1024
@@ -36,9 +36,13 @@ class ChatClient:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
+            headers = {}
+            if self.config.api_key:
+                headers["Authorization"] = f"Bearer {self.config.api_key}"
+            timeout = aiohttp.ClientTimeout(total=self.config.timeout) if self.config.timeout else None
             self._session = aiohttp.ClientSession(
-                headers={"Authorization": f"Bearer {self.config.api_key}"},
-                timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+                headers=headers,
+                timeout=timeout,
             )
         return self._session
 
@@ -88,7 +92,11 @@ class ChatClient:
 
     async def _nonstream_chat(self, session: aiohttp.ClientSession, payload: dict) -> Optional[str]:
         """Get a complete response in one shot."""
-        async with session.post(f"{self.config.base_url}/chat/completions", json=payload) as resp:
+        if not self.config.base_url:
+            logger.error("No LLM base_url configured")
+            return None
+        url = f"{self.config.base_url}/chat/completions"
+        async with session.post(url, json=payload) as resp:
             if resp.status != 200:
                 logger.error(f"Chat API returned {resp.status}")
                 return None
@@ -107,9 +115,13 @@ class ChatClient:
         Args:
             on_token: Optional callback(text_chunk) for each token.
         """
+        if not self.config.base_url:
+            logger.error("No LLM base_url configured")
+            return None
         payload["stream"] = True
         chunks = []
-        async with session.post(f"{self.config.base_url}/chat/completions", json=payload) as resp:
+        url = f"{self.config.base_url}/chat/completions"
+        async with session.post(url, json=payload) as resp:
             if resp.status != 200:
                 logger.error(f"Stream API returned {resp.status}")
                 return None

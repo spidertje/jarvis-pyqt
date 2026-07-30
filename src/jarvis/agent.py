@@ -38,16 +38,16 @@ class AgentConfig:
     tts: TTSConfig = field(default_factory=TTSConfig)
     # Audio
     audio: AudioConfig = field(default_factory=AudioConfig)
-    # Profile manager — defaults from env or fallback
-    profile_db_host: str = os.environ.get("JARVIS_DB_HOST", "192.168.55.41")
-    profile_db_port: int = int(os.environ.get("JARVIS_DB_PORT", "3306"))
-    profile_db_user: str = os.environ.get("JARVIS_DB_USER", "root")
-    profile_db_password: str = os.environ.get("JARVIS_DB_PASSWORD", "")
-    profile_db_name: str = os.environ.get("JARVIS_DB_NAME", "jarvis")
-    # LLM API
-    llm_base_url: str = os.environ.get("JARVIS_LLM_URL", "http://192.168.55.179:8642/v1")
-    llm_api_key: str = os.environ.get("JARVIS_LLM_API_KEY", "1111111111")
-    llm_model: str = os.environ.get("JARVIS_LLM_MODEL", "auto")
+    # Profile manager — read from env vars only, no hardcoded fallbacks
+    profile_db_host: Optional[str] = None
+    profile_db_port: Optional[int] = None
+    profile_db_user: Optional[str] = None
+    profile_db_password: Optional[str] = None
+    profile_db_name: Optional[str] = None
+    # LLM API — read from env vars only, no hardcoded fallbacks
+    llm_base_url: Optional[str] = None
+    llm_api_key: Optional[str] = None
+    llm_model: Optional[str] = None
     # STT silence timeout
     silence_timeout: float = 2.0
     # Default system prompt (used when no profile is active)
@@ -67,6 +67,24 @@ class JarvisAgent:
         self.state = JarvisState.IDLE
         self._state_callbacks: List[Callable] = []
 
+        # Resolve None config values from env vars
+        if self.config.profile_db_host is None:
+            self.config.profile_db_host = os.environ.get("JARVIS_DB_HOST")
+        if self.config.profile_db_port is None:
+            self.config.profile_db_port = int(os.environ.get("JARVIS_DB_PORT", "3306"))
+        if self.config.profile_db_user is None:
+            self.config.profile_db_user = os.environ.get("JARVIS_DB_USER")
+        if self.config.profile_db_password is None:
+            self.config.profile_db_password = os.environ.get("JARVIS_DB_PASSWORD")
+        if self.config.profile_db_name is None:
+            self.config.profile_db_name = os.environ.get("JARVIS_DB_NAME")
+        if self.config.llm_base_url is None:
+            self.config.llm_base_url = os.environ.get("JARVIS_LLM_URL")
+        if self.config.llm_api_key is None:
+            self.config.llm_api_key = os.environ.get("JARVIS_LLM_API_KEY")
+        if self.config.llm_model is None:
+            self.config.llm_model = os.environ.get("JARVIS_LLM_MODEL")
+
         # Sub-services
         chat_cfg = ChatConfig()
         if self.config.llm_base_url:
@@ -75,6 +93,11 @@ class JarvisAgent:
             chat_cfg.api_key = self.config.llm_api_key
         if self.config.llm_model:
             chat_cfg.model = self.config.llm_model
+        # Copy all LLM config fields that ChatConfig supports
+        chat_cfg.temperature = self.config.chat.temperature
+        chat_cfg.max_tokens = self.config.chat.max_tokens
+        chat_cfg.system_prompt = self.config.chat.system_prompt
+        chat_cfg.timeout = self.config.chat.timeout
         self.chat = ChatClient(chat_cfg)
         self.stt = WhisperSTT(self.config.stt)
         self.tts = PiperTTS(self.config.tts)
