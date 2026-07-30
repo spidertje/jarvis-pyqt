@@ -349,7 +349,28 @@ class JarvisApp(QWidget):
     def _open_settings(self):
         """Open the settings/preferences dialog."""
         dialog = SettingsDialog(agent_config=self.agent.config, parent=self)
+        dialog.face_config = self._build_face_config()
+        dialog.on_face_restart = self._restart_face_thread
         dialog.exec()
+
+    def _build_face_config(self) -> FaceConfig:
+        """Build a FaceConfig from current face_thread config."""
+        cfg = FaceConfig()
+        if hasattr(self, 'face_thread') and hasattr(self.face_thread, 'config'):
+            cfg.camera_index = self.face_thread.config.camera_index
+        return cfg
+
+    def _restart_face_thread(self, new_config: FaceConfig):
+        """Stop old face thread and start new one with updated config."""
+        logger.info(f"Restarting face thread with camera={new_config.camera_index}")
+        # Stop current thread
+        if hasattr(self, 'face_thread'):
+            self.face_thread.stop()
+        # Create and start new thread
+        self.face_thread = FaceRecThread(new_config)
+        self.face_thread.face_detected.connect(self._on_face_detected)
+        self.face_thread.start()
+        logger.info("Face thread restarted")
 
     def _toggle_voice(self):
         """Toggle voice mode (listen → chat → speak loop)."""

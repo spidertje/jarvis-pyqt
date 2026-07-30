@@ -3,6 +3,7 @@ Jarvis Settings — Preferences dialog for API endpoints and DB config.
 """
 
 import os
+from typing import Optional, Callable
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QSpinBox, QPushButton,
@@ -10,6 +11,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont, QColor
+
+from jarvis.face import FaceConfig
 
 
 class SettingsDialog(QDialog):
@@ -21,6 +24,9 @@ class SettingsDialog(QDialog):
         self.setMinimumSize(500, 450)
         self.setModal(True)
         self.agent_config = agent_config
+        # Face tab callback — caller sets these before showing
+        self.face_config: Optional[FaceConfig] = None
+        self.on_face_restart: Optional[Callable] = None
 
         self._setup_ui()
 
@@ -418,10 +424,15 @@ class SettingsDialog(QDialog):
         group = self._make_group("Face Recognition", "👁")
         layout = QVBoxLayout(group)
 
+        # Read face config from face_config passed by caller
+        fc = self.face_config
+        if fc is None:
+            fc = FaceConfig()
+
         # Camera index
         self.camera_spin = QSpinBox()
         self.camera_spin.setRange(0, 10)
-        self.camera_spin.setValue(0)
+        self.camera_spin.setValue(fc.camera_index)
         self.camera_spin.setSuffix(" (device index)")
         self.camera_spin.setFixedHeight(30)
         self.camera_spin.setStyleSheet("""
@@ -439,11 +450,11 @@ class SettingsDialog(QDialog):
         layout.addWidget(cam_label)
         layout.addWidget(self.camera_spin)
 
-        # Detection sensitivity
+        # Confidence threshold
         self.face_thresh_spin = QSpinBox()
-        self.face_thresh_spin.setRange(0, 100)
-        self.face_thresh_spin.setValue(75)
-        self.face_thresh_spin.setSuffix("%")
+        self.face_thresh_spin.setRange(0, 200)
+        self.face_thresh_spin.setValue(int(fc.confidence_threshold))
+        self.face_thresh_spin.setSuffix(" (lower = stricter)")
         self.face_thresh_spin.setFixedHeight(30)
         self.face_thresh_spin.setStyleSheet("""
             QSpinBox {
@@ -455,10 +466,37 @@ class SettingsDialog(QDialog):
             }
         """)
 
-        thresh_label = QLabel("Face Detection Threshold:")
+        thresh_label = QLabel("Confidence Threshold:")
         thresh_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
         layout.addWidget(thresh_label)
         layout.addWidget(self.face_thresh_spin)
+
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        sep.setStyleSheet("color: rgba(0, 200, 255, 40);")
+        layout.addWidget(sep)
+
+        # Restart button
+        self.restart_btn = QPushButton("🔄 Restart Face Thread")
+        self.restart_btn.setFixedHeight(36)
+        self.restart_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(0, 100, 180, 70);
+                border: 1px solid rgba(0, 180, 255, 120);
+                border-radius: 4px;
+                color: white;
+                font-size: 13px;
+                font-weight: bold;
+                padding: 0 12px;
+            }
+            QPushButton:hover {
+                background: rgba(0, 130, 220, 100);
+            }
+        """)
+        self.restart_btn.clicked.connect(self._restart_face)
+        layout.addWidget(self.restart_btn)
 
         layout.addStretch()
         return group
@@ -538,6 +576,24 @@ class SettingsDialog(QDialog):
         for child in parent.findChildren(QLineEdit):
             result.append(child)
         return result
+
+    def _restart_face(self):
+        """Build FaceConfig from form and call restart callback."""
+        if not self.on_face_restart or not self.face_config:
+            return
+
+        fc = self.face_config
+        fc.camera_index = self.camera_spin.value()
+        fc.confidence_threshold = float(self.face_thresh_spin.value())
+
+        self.on_face_restart(fc)
+        QMessageBox.information(
+            self,
+            "Face Thread Restarted",
+            f"Face detection restarted with:\n"
+            f"Camera index: {fc.camera_index}\n"
+            f"Confidence threshold: {fc.confidence_threshold}"
+        )
 
     def _test_connection(self):
         """Test database connection with current settings."""
@@ -635,11 +691,10 @@ class SettingsDialog(QDialog):
             self.agent_config.profile_db_user = values.get("db_user", self.agent_config.profile_db_user)
             self.agent_config.profile_db_password = values.get("db_password", self.agent_config.profile_db_password)
 
-            # Face
-            # Face config is passed separately, but we store camera_index on it
-            # The FaceConfig is not part of AgentConfig, so save it on the dialog for later use
-            self._saved_camera_index = values.get("camera_index", 0)
-            self._saved_face_threshold = values.get("face_threshold", 0.75)
+            # Face — just update the face_config object (caller handles restart)
+            if self.face_config:
+                self.face_config.camera_index = self.camera_spin.value()
+                self.face_config.confidence_threshold = float(self.face_thresh_spin.value())
 
         QMessageBox.information(
             self,
