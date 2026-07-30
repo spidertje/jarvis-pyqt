@@ -78,12 +78,9 @@ class JarvisAgent:
             self.config.profile_db_password = os.environ.get("JARVIS_DB_PASSWORD")
         if self.config.profile_db_name is None:
             self.config.profile_db_name = os.environ.get("JARVIS_DB_NAME")
-        if self.config.llm_base_url is None:
-            self.config.llm_base_url = os.environ.get("JARVIS_LLM_URL")
-        if self.config.llm_api_key is None:
-            self.config.llm_api_key = os.environ.get("JARVIS_LLM_API_KEY")
-        if self.config.llm_model is None:
-            self.config.llm_model = os.environ.get("JARVIS_LLM_MODEL")
+        self.config.llm_base_url = self.config.llm_base_url or os.environ.get("JARVIS_LLM_URL") or os.environ.get("JARVIS_LLM_BASE_URL") or "http://192.168.55.179:8642/v1"
+        self.config.llm_api_key = self.config.llm_api_key or os.environ.get("JARVIS_LLM_API_KEY")
+        self.config.llm_model = self.config.llm_model or os.environ.get("JARVIS_LLM_MODEL")
 
         # Sub-services
         chat_cfg = ChatConfig()

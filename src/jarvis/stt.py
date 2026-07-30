@@ -63,8 +63,11 @@ class WhisperSTT:
     async def disconnect(self):
         """Disconnect from faster-whisper."""
         if self._writer:
-            self._writer.close()
-            await self._writer.wait_closed()
+            try:
+                self._writer.close()
+                await self._writer.wait_closed()
+            except Exception:
+                pass
         self._connected = False
 
     def _is_silence(self, audio_data: bytes, threshold: float = 500) -> bool:
@@ -104,6 +107,7 @@ class WhisperSTT:
         accumulated = b""
         silence_chunks = 0
         max_silence_chunks = int(timeout / chunk_duration)
+        speech_detected = False
 
         logger.info("Listening...")
 
@@ -115,7 +119,7 @@ class WhisperSTT:
                     samplerate=self.config.sample_rate,
                     channels=self.config.channels,
                     dtype="int16",
-                    block=True,
+                    blocking=True,
                 )
                 if chunk is None:
                     break
@@ -132,6 +136,7 @@ class WhisperSTT:
                         break
                 else:
                     silence_chunks = 0
+                    speech_detected = True
 
         except Exception as e:
             logger.error(f"Recording error: {e}")
@@ -139,6 +144,11 @@ class WhisperSTT:
 
         if not accumulated:
             logger.info("No audio captured")
+            return None
+
+        # If we never detected speech, treat as no speech
+        if not speech_detected:
+            logger.info("No speech detected")
             return None
 
         # Transcribe the accumulated audio
@@ -207,20 +217,15 @@ class WhisperSTT:
             text = None
             while True:
                 event = await self._read_event()
-                
-                # Read additional data
-                data_length = event.get("data_length", 0)
-                if data_length > 0:
-                    await self._reader.readexactly(data_length)
-                
-                # Read payload
-                payload_length = event.get("payload_length", 0)
-                if payload_length > 0:
-                    payload = await self._reader.readexactly(payload_length)
-                    if event.get("type") == "transcript":
-                        text = payload.decode("utf-8")
+                if not event:
+                    break
 
-                if event.get("type") in ("transcript", "transcript-stop"):
+                if event.get("type") == "transcript":
+                    data = event.get("data", {})
+                    text = data.get("text", "")
+                    break
+
+                if event.get("type") == "transcript-stop":
                     break
 
             return text

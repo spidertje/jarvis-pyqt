@@ -148,6 +148,8 @@ class FaceRecThread(QThread):
 class JarvisApp(QWidget):
     """Main Jarvis application window."""
 
+    _status_updated = pyqtSignal(str)
+
     def __init__(self):
         super().__init__()
 
@@ -155,6 +157,7 @@ class JarvisApp(QWidget):
         self.hud = HUDOverlay()
         self.hud.resize(800, 600)
         self.hud.move(0, 0)
+        self.hud.show()
 
         # Agent
         # Build agent config (env vars override defaults)
@@ -172,6 +175,9 @@ class JarvisApp(QWidget):
 
         # UI controls (foreground layer)
         self._setup_ui()
+
+        # Signal: async status updates → status label
+        self._status_updated.connect(self.status_label.setText)
 
         # State change tracking
         self.agent.on_state_change(self._on_state_change)
@@ -260,7 +266,7 @@ class JarvisApp(QWidget):
                 border-color: rgba(0, 200, 255, 150);
             }
         """)
-        self.chat_input.returnPressed.connect(self._send_chat)
+        self.chat_input.returnPressed.connect(self._on_send_clicked)
         bar_layout.addWidget(self.chat_input, alignment=Qt.AlignmentFlag.AlignRight, stretch=1)
 
         # Send button
@@ -279,7 +285,7 @@ class JarvisApp(QWidget):
                 background: rgba(0, 200, 255, 150);
             }
         """)
-        self.send_btn.clicked.connect(self._send_chat)
+        self.send_btn.clicked.connect(self._on_send_clicked)
         bar_layout.addWidget(self.send_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
         # Settings button
@@ -314,6 +320,7 @@ class JarvisApp(QWidget):
 
     def _on_state_change(self, state: JarvisState):
         """Update UI on state change."""
+        self.hud.set_state(state)
         state_colors = {
             JarvisState.IDLE: ("⏹ Standby", "rgba(0, 200, 255, 200)"),
             JarvisState.LISTENING: ("🎙 Listening...", "rgba(0, 255, 100, 220)"),
@@ -376,12 +383,12 @@ class JarvisApp(QWidget):
                 self._voice_task.cancel()
             self._voice_task = None
             self.mic_btn.setText("🎤")
-            self.status_label.setText("⏹ Standby")
+            self.hud.set_state(JarvisState.IDLE)
         else:
             # Start voice mode
             self._running = True
             self.mic_btn.setText("⏹")
-            self.status_label.setText("Listening...")
+            self.hud.set_state(JarvisState.LISTENING)
             if self.event_loop_thread.loop:
                 self._voice_task = self.event_loop_thread.loop.create_task(self._voice_loop())
             else:
@@ -392,21 +399,22 @@ class JarvisApp(QWidget):
         while self._running:
             await self.agent._run_voice()
 
-    async def _send_chat(self):
-        """Send a text message and get response (with optional TTS)."""
+    def _on_send_clicked(self):
+        """Sync wrapper — dispatches async _send_chat on the background event loop."""
         text = self.chat_input.text().strip()
         if not text:
             return
-
         self.chat_input.clear()
-        self.status_label.setText("Thinking...")
+        self._status_updated.emit("Thinking...")
+        if self.event_loop_thread and self.event_loop_thread.loop:
+            asyncio.run_coroutine_threadsafe(
+                self._send_chat(text), self.event_loop_thread.loop
+            )
 
-        # Chat and optionally speak
+    async def _send_chat(self, text: str):
+        """Send a text message and get response (with optional TTS)."""
         reply = await self.agent.chat_text_and_speak(text)
-        if reply:
-            self.status_label.setText("✓")
-        else:
-            self.status_label.setText("✗ Error")
+        self._status_updated.emit("✓" if reply else "✗ Error")
 
     def closeEvent(self, event):
         """Clean shutdown."""
@@ -425,7 +433,11 @@ class JarvisApp(QWidget):
         # Close all services
         try:
             if self.event_loop_thread.loop:
-                asyncio.get_event_loop().run_until_complete(self.agent.close())
+                import asyncio
+                fut = asyncio.run_coroutine_threadsafe(
+                    self.agent.close(), self.event_loop_thread.loop
+                )
+                fut.result(timeout=5)
             else:
                 # Fallback: run sync close
                 import asyncio as _ai
