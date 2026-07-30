@@ -119,7 +119,11 @@ class FaceRecognizer:
             Number of models loaded.
         """
         self._models.clear()
-        db = self._get_db()
+        try:
+            db = self._get_db()
+        except (RuntimeError, pymysql.err.OperationalError) as e:
+            logger.warning(f"Face DB unavailable: {e}")
+            return 0
 
         try:
             with db.cursor() as cur:
@@ -263,13 +267,21 @@ class FaceRecognizer:
             return False
 
         # Store sample in DB
-        db = self._get_db()
-        with db.cursor() as cur:
-            cur.execute(
-                "INSERT INTO face_samples (name, sample, created_at) VALUES (%s, %s, NOW())",
-                (name, sample_blob),
-            )
-            db.commit()
+        try:
+            db = self._get_db()
+        except (RuntimeError, pymysql.err.OperationalError):
+            logger.error("DB unavailable, cannot store face sample")
+            return False
+        try:
+            with db.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO face_samples (name, sample, created_at) VALUES (%s, %s, NOW())",
+                    (name, sample_blob),
+                )
+                db.commit()
+        except Exception as e:
+            logger.error(f"Failed to store face sample: {e}")
+            return False
 
         count = self._get_sample_count(name)
         logger.info(f"Added face sample for {name} ({count} total)")
@@ -380,6 +392,9 @@ class FaceRecognizer:
         """List all known faces."""
         try:
             db = self._get_db()
+        except (RuntimeError, pymysql.err.OperationalError):
+            return []
+        try:
             with db.cursor() as cur:
                 cur.execute("SELECT name FROM face_model ORDER BY name")
                 return [row["name"] for row in cur.fetchall()]
@@ -391,6 +406,9 @@ class FaceRecognizer:
         """Delete a face model from DB."""
         try:
             db = self._get_db()
+        except (RuntimeError, pymysql.err.OperationalError):
+            return False
+        try:
             with db.cursor() as cur:
                 cur.execute("DELETE FROM face_model WHERE name = %s", (name,))
                 db.commit()

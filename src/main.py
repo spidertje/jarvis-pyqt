@@ -34,7 +34,6 @@ from jarvis.profile import ProfileManager, Profile
 from jarvis.settings import SettingsDialog
 
 from PyQt6.QtCore import QThread, pyqtSignal
-from PyQt6.QtWidgets import QMenu, QAction
 import cv2
 import logging
 
