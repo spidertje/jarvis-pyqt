@@ -31,8 +31,10 @@ from jarvis.stt import WyomingConfig as STTWyomingConfig
 from jarvis.tts import WyomingConfig as TTSWyomingConfig
 from jarvis.face import FaceConfig
 from jarvis.profile import ProfileManager, Profile
+from jarvis.settings import SettingsDialog
 
 from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtWidgets import QMenu, QAction
 import cv2
 import logging
 import asyncio
@@ -276,6 +278,25 @@ class JarvisApp(QWidget):
         self.send_btn.clicked.connect(self._send_chat)
         bar_layout.addWidget(self.send_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
+        # Settings button
+        self.settings_btn = QPushButton("⚙")
+        self.settings_btn.setFixedSize(35, 35)
+        self.settings_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(80, 80, 80, 60);
+                border: 1px solid rgba(150, 150, 150, 100);
+                border-radius: 18px;
+                color: #ccc;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background: rgba(120, 120, 120, 80);
+                border-color: rgba(200, 200, 200, 150);
+            }
+        """)
+        self.settings_btn.clicked.connect(self._open_settings)
+        bar_layout.addWidget(self.settings_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
         layout.addWidget(bar)
 
     async def _init_services(self):
@@ -324,6 +345,11 @@ class JarvisApp(QWidget):
             # No profile for this person — just show face overlay
             self.hud.set_face_detected(name, confidence)
             logger.info(f"Face detected but no profile: {name}")
+
+    def _open_settings(self):
+        """Open the settings/preferences dialog."""
+        dialog = SettingsDialog(agent_config=self.agent.config, parent=self)
+        dialog.exec()
 
     def _toggle_voice(self):
         """Toggle voice mode (listen → chat → speak loop)."""

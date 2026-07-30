@@ -1,0 +1,650 @@
+"""
+Jarvis Settings — Preferences dialog for API endpoints and DB config.
+"""
+
+import os
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QLabel, QLineEdit, QSpinBox, QPushButton,
+    QGroupBox, QMessageBox, QFrame, QTabWidget, QWidget,
+)
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QFont, QColor
+
+
+class SettingsDialog(QDialog):
+    """Settings/preferences dialog for Jarvis configuration."""
+
+    def __init__(self, agent_config=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Jarvis — Settings")
+        self.setMinimumSize(500, 450)
+        self.setModal(True)
+        self.agent_config = agent_config
+
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+        layout.setContentsMargins(15, 15, 15, 15)
+
+        # Title
+        title = QLabel("⚙ Jarvis Settings")
+        title.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        title.setStyleSheet("color: rgba(0, 200, 255, 220); padding: 5px;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+
+        # Tab widget for sections
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid rgba(0, 200, 255, 60);
+                border-radius: 6px;
+                background: rgba(10, 10, 20, 0.95);
+            }
+            QTabBar::tab {
+                background: rgba(0, 30, 60, 0.8);
+                border: 1px solid rgba(0, 200, 255, 40);
+                border-bottom: none;
+                padding: 8px 16px;
+                margin-right: 2px;
+                color: rgba(0, 200, 255, 180);
+                font-size: 13px;
+            }
+            QTabBar::tab:selected {
+                background: rgba(0, 200, 255, 30);
+                border-bottom: 2px solid rgba(0, 200, 255, 180);
+                color: rgba(0, 255, 255, 255);
+            }
+            QTabBar::tab:hover {
+                background: rgba(0, 200, 255, 15);
+            }
+        """)
+
+        # Build tabs
+        self.tabs.addTab(self._build_llm_tab(), "🤖 LLM")
+        self.tabs.addTab(self._build_stt_tab(), "🎙 STT")
+        self.tabs.addTab(self._build_tts_tab(), "🔊 TTS")
+        self.tabs.addTab(self._build_audio_tab(), "🔈 Audio")
+        self.tabs.addTab(self._build_db_tab(), "🗄 Database")
+        self.tabs.addTab(self._build_face_tab(), "👁 Face")
+
+        layout.addWidget(self.tabs)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+
+        self.test_btn = QPushButton("🔌 Test Connection")
+        self.test_btn.setFixedHeight(36)
+        self.test_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(0, 120, 180, 70);
+                border: 1px solid rgba(0, 200, 255, 120);
+                border-radius: 4px;
+                color: white;
+                font-size: 13px;
+                padding: 0 16px;
+            }
+            QPushButton:hover {
+                background: rgba(0, 150, 220, 100);
+            }
+        """)
+        self.test_btn.clicked.connect(self._test_connection)
+        btn_layout.addWidget(self.test_btn)
+
+        btn_layout.addStretch()
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setFixedHeight(36)
+        self.cancel_btn.setFixedWidth(90)
+        self.cancel_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(80, 80, 80, 60);
+                border: 1px solid rgba(150, 150, 150, 100);
+                border-radius: 4px;
+                color: #ccc;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background: rgba(100, 100, 100, 80);
+            }
+        """)
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.cancel_btn)
+
+        self.save_btn = QPushButton("Save")
+        self.save_btn.setFixedHeight(36)
+        self.save_btn.setFixedWidth(90)
+        self.save_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(0, 180, 120, 70);
+                border: 1px solid rgba(0, 220, 150, 120);
+                border-radius: 4px;
+                color: white;
+                font-size: 13px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: rgba(0, 200, 140, 100);
+            }
+        """)
+        self.save_btn.clicked.connect(self._save_settings)
+        btn_layout.addWidget(self.save_btn)
+
+        layout.addLayout(btn_layout)
+
+    def _make_group(self, title, icon=""):
+        """Create a styled group box."""
+        group = QGroupBox(f"{icon} {title}" if icon else title)
+        group.setStyleSheet("""
+            QGroupBox {
+                border: 1px solid rgba(0, 200, 255, 60);
+                border-radius: 6px;
+                margin-top: 10px;
+                padding-top: 12px;
+                font-size: 13px;
+                color: rgba(0, 200, 255, 200);
+                font-weight: bold;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 6px;
+            }
+        """)
+        return group
+
+    def _make_field(self, label, placeholder="", default=""):
+        """Create a label + line edit pair."""
+        lbl = QLabel(label)
+        lbl.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        field = QLineEdit()
+        field.setPlaceholderText(placeholder)
+        if default:
+            field.setText(str(default))
+        field.setStyleSheet("""
+            QLineEdit {
+                background: rgba(0, 0, 0, 60);
+                border: 1px solid rgba(0, 200, 255, 80);
+                border-radius: 4px;
+                padding: 6px 10px;
+                color: #e0e0e0;
+                font-size: 13px;
+            }
+            QLineEdit:focus {
+                border-color: rgba(0, 220, 255, 160);
+            }
+            QLineEdit:disabled {
+                color: rgba(150, 150, 150, 100);
+            }
+        """)
+        return lbl, field
+
+    def _build_llm_tab(self):
+        """LLM configuration tab."""
+        config = self.agent_config
+        if not config:
+            return QWidget()
+
+        group = self._make_group("LLM Configuration", "🤖")
+        layout = QVBoxLayout(group)
+
+        fields = [
+            ("API Base URL:", config.llm_base_url, "http://host:port/v1"),
+            ("API Key:", config.llm_api_key, "..."),
+            ("Model:", config.llm_model, "auto"),
+        ]
+
+        for label, default, placeholder in fields:
+            lbl, field = self._make_field(label, placeholder, default)
+            field.setPlaceholderText(placeholder)
+            layout.addWidget(lbl)
+            layout.addWidget(field)
+
+        layout.addStretch()
+        return group
+
+    def _build_stt_tab(self):
+        """STT (Whisper) configuration tab."""
+        config = self.agent_config
+        if not config:
+            return QWidget()
+
+        group = self._make_group("Speech-to-Text (Whisper)", "🎙")
+        layout = QVBoxLayout(group)
+
+        # Host
+        lbl, host_field = self._make_field(
+            "Server Host:",
+            config.stt.host if config.stt else "192.168.55.41",
+            "192.168.55.41"
+        )
+        layout.addWidget(lbl)
+        layout.addWidget(host_field)
+
+        # Port
+        self.stt_port_spin = QSpinBox()
+        self.stt_port_spin.setRange(1, 65535)
+        self.stt_port_spin.setValue(config.stt.port if config.stt else 10300)
+        self.stt_port_spin.setFixedHeight(30)
+        self.stt_port_spin.setStyleSheet("""
+            QSpinBox {
+                background: rgba(0, 0, 0, 60);
+                border: 1px solid rgba(0, 200, 255, 80);
+                border-radius: 4px;
+                padding: 4px 8px;
+                color: #e0e0e0;
+            }
+        """)
+        port_label = QLabel("Server Port:")
+        port_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        layout.addWidget(port_label)
+        layout.addWidget(self.stt_port_spin)
+
+        # Silence timeout
+        self.silence_spin = QSpinBox()
+        self.silence_spin.setRange(0, 30)
+        self.silence_spin.setValue(int(getattr(config, 'silence_timeout', 2.0)))
+        self.silence_spin.setSuffix(" sec")
+        self.silence_spin.setFixedHeight(30)
+        self.silence_spin.setStyleSheet("""
+            QSpinBox {
+                background: rgba(0, 0, 0, 60);
+                border: 1px solid rgba(0, 200, 255, 80);
+                border-radius: 4px;
+                padding: 4px 8px;
+                color: #e0e0e0;
+            }
+        """)
+
+        sil_label = QLabel("Silence Detection Timeout:")
+        sil_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        layout.addWidget(sil_label)
+        layout.addWidget(self.silence_spin)
+
+        layout.addStretch()
+        return group
+
+    def _build_tts_tab(self):
+        """TTS (Piper) configuration tab."""
+        config = self.agent_config
+        if not config:
+            return QWidget()
+
+        group = self._make_group("Text-to-Speech (Piper)", "🔊")
+        layout = QVBoxLayout(group)
+
+        # Host
+        lbl, host_field = self._make_field(
+            "Server Host:",
+            config.tts.host if config.tts else "192.168.55.41",
+            "192.168.55.41"
+        )
+        layout.addWidget(lbl)
+        layout.addWidget(host_field)
+
+        # Port
+        self.tts_port_spin = QSpinBox()
+        self.tts_port_spin.setRange(1, 65535)
+        self.tts_port_spin.setValue(config.tts.port if config.tts else 10200)
+        self.tts_port_spin.setFixedHeight(30)
+        self.tts_port_spin.setStyleSheet("""
+            QSpinBox {
+                background: rgba(0, 0, 0, 60);
+                border: 1px solid rgba(0, 200, 255, 80);
+                border-radius: 4px;
+                padding: 4px 8px;
+                color: #e0e0e0;
+            }
+        """)
+        port_label = QLabel("Server Port:")
+        port_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        layout.addWidget(port_label)
+        layout.addWidget(self.tts_port_spin)
+
+        # Voice model
+        self.voice_field = QLineEdit()
+        self.voice_field.setText("en_US-lessac-medium")
+        self.voice_field.setPlaceholderText("en_US-lessac-medium")
+        self.voice_field.setStyleSheet("""
+            QLineEdit {
+                background: rgba(0, 0, 0, 60);
+                border: 1px solid rgba(0, 200, 255, 80);
+                border-radius: 4px;
+                padding: 6px 10px;
+                color: #e0e0e0;
+                font-size: 13px;
+            }
+            QLineEdit:focus {
+                border-color: rgba(0, 220, 255, 160);
+            }
+        """)
+        voice_label = QLabel("Voice Model:")
+        voice_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        layout.addWidget(voice_label)
+        layout.addWidget(self.voice_field)
+
+        layout.addStretch()
+        return group
+
+    def _build_audio_tab(self):
+        """Audio output configuration tab."""
+        config = self.agent_config
+        if not config:
+            return QWidget()
+
+        group = self._make_group("Audio Output", "🔈")
+        layout = QVBoxLayout(group)
+
+        # Output device
+        self.audio_device_spin = QSpinBox()
+        default_dev = config.audio.device if config.audio else None
+        self.audio_device_spin.setValue(default_dev if default_dev is not None else -1)
+        self.audio_device_spin.setSuffix(" (default if -1)")
+        self.audio_device_spin.setFixedHeight(30)
+        self.audio_device_spin.setStyleSheet("""
+            QSpinBox {
+                background: rgba(0, 0, 0, 60);
+                border: 1px solid rgba(0, 200, 255, 80);
+                border-radius: 4px;
+                padding: 4px 8px;
+                color: #e0e0e0;
+            }
+        """)
+
+        dev_label = QLabel("Output Device Index:")
+        dev_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        layout.addWidget(dev_label)
+        layout.addWidget(self.audio_device_spin)
+
+        layout.addStretch()
+        return group
+
+    def _build_db_tab(self):
+        """Database configuration tab."""
+        config = self.agent_config
+        if not config:
+            return QWidget()
+
+        group = self._make_group("MariaDB Connection", "🗄")
+        layout = QVBoxLayout(group)
+
+        fields = [
+            ("Host:", config.profile_db_host, "192.168.55.41"),
+            ("Port:", str(config.profile_db_port), "3306"),
+            ("Database:", config.profile_db_name, "jarvis"),
+            ("User:", config.profile_db_user, "alex"),
+            ("Password:", "", "••••••••"),
+        ]
+
+        self.password_field = QLineEdit()
+        self.password_field.setText(config.profile_db_password)
+        self.password_field.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_field.setPlaceholderText("••••••••")
+        self.password_field.setStyleSheet("""
+            QLineEdit {
+                background: rgba(0, 0, 0, 60);
+                border: 1px solid rgba(0, 200, 255, 80);
+                border-radius: 4px;
+                padding: 6px 10px;
+                color: #e0e0e0;
+                font-size: 13px;
+            }
+            QLineEdit:focus {
+                border-color: rgba(0, 220, 255, 160);
+            }
+        """)
+
+        for i, (label, default, placeholder) in enumerate(fields):
+            lbl, field = self._make_field(label, placeholder, default)
+            field.setPlaceholderText(placeholder)
+            layout.addWidget(lbl)
+            layout.addWidget(field)
+            if i == len(fields) - 1:  # Last field is password
+                self.password_field = field
+
+        layout.addStretch()
+        return group
+
+    def _build_face_tab(self):
+        """Face recognition configuration tab."""
+        config = self.agent_config
+        if not config:
+            return QWidget()
+
+        group = self._make_group("Face Recognition", "👁")
+        layout = QVBoxLayout(group)
+
+        # Camera index
+        self.camera_spin = QSpinBox()
+        self.camera_spin.setRange(0, 10)
+        self.camera_spin.setValue(0)
+        self.camera_spin.setSuffix(" (device index)")
+        self.camera_spin.setFixedHeight(30)
+        self.camera_spin.setStyleSheet("""
+            QSpinBox {
+                background: rgba(0, 0, 0, 60);
+                border: 1px solid rgba(0, 200, 255, 80);
+                border-radius: 4px;
+                padding: 4px 8px;
+                color: #e0e0e0;
+            }
+        """)
+
+        cam_label = QLabel("Camera Device Index:")
+        cam_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        layout.addWidget(cam_label)
+        layout.addWidget(self.camera_spin)
+
+        # Detection sensitivity
+        self.face_thresh_spin = QSpinBox()
+        self.face_thresh_spin.setRange(0, 100)
+        self.face_thresh_spin.setValue(75)
+        self.face_thresh_spin.setSuffix("%")
+        self.face_thresh_spin.setFixedHeight(30)
+        self.face_thresh_spin.setStyleSheet("""
+            QSpinBox {
+                background: rgba(0, 0, 0, 60);
+                border: 1px solid rgba(0, 200, 255, 80);
+                border-radius: 4px;
+                padding: 4px 8px;
+                color: #e0e0e0;
+            }
+        """)
+
+        thresh_label = QLabel("Face Detection Threshold:")
+        thresh_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        layout.addWidget(thresh_label)
+        layout.addWidget(self.face_thresh_spin)
+
+        layout.addStretch()
+        return group
+
+    def _get_values(self):
+        """Extract all form values into a config dict.
+        
+        Uses stored references to form fields rather than re-scanning layouts.
+        """
+        config = self.agent_config or {}
+        if not config:
+            return {}
+
+        # LLM: fields[0]=base_url, [1]=api_key, [2]=model
+        llm_group = self.tabs.widget(0)
+        llm_widgets = self._get_qlineedits(llm_group)
+        llm_base_url = llm_widgets[0].text() if len(llm_widgets) > 0 else config.get("llm_base_url", "")
+        llm_api_key = llm_widgets[1].text() if len(llm_widgets) > 1 else config.get("llm_api_key", "")
+        llm_model = llm_widgets[2].text() if len(llm_widgets) > 2 else config.get("llm_model", "auto")
+
+        # STT: host (widget[0]), port (self.stt_port_spin)
+        stt_group = self.tabs.widget(1)
+        stt_widgets = self._get_qlineedits(stt_group)
+        stt_host = stt_widgets[0].text() if len(stt_widgets) > 0 else ""
+        stt_port = self.stt_port_spin.value() if hasattr(self, 'stt_port_spin') else 10300
+
+        # TTS: host (widget[0]), port (self.tts_port_spin), voice (self.voice_field)
+        tts_group = self.tabs.widget(2)
+        tts_widgets = self._get_qlineedits(tts_group)
+        tts_host = tts_widgets[0].text() if len(tts_widgets) > 0 else ""
+        tts_port = self.tts_port_spin.value() if hasattr(self, 'tts_port_spin') else 10200
+        tts_voice = self.voice_field.text() if hasattr(self, 'voice_field') else "en_US-lessac-medium"
+
+        # Audio: output_device
+        audio_device = self.audio_device_spin.value() if hasattr(self, 'audio_device_spin') else -1
+
+        # DB: host, port, name, user, password
+        db_group = self.tabs.widget(4)
+        db_widgets = self._get_qlineedits(db_group)
+        db_host = db_widgets[0].text() if len(db_widgets) > 0 else ""
+        db_port_str = db_widgets[1].text() if len(db_widgets) > 1 else "3306"
+        db_name = db_widgets[2].text() if len(db_widgets) > 2 else ""
+        db_user = db_widgets[3].text() if len(db_widgets) > 3 else ""
+        db_password = db_widgets[4].text() if len(db_widgets) > 4 else ""
+
+        try:
+            db_port = int(db_port_str) if db_port_str.isdigit() else 3306
+        except ValueError:
+            db_port = 3306
+
+        # Face: camera_index, threshold
+        camera_index = self.camera_spin.value() if hasattr(self, 'camera_spin') else 0
+        face_threshold = self.face_thresh_spin.value() if hasattr(self, 'face_thresh_spin') else 75
+
+        return {
+            "llm_base_url": llm_base_url,
+            "llm_api_key": llm_api_key,
+            "llm_model": llm_model,
+            "stt_host": stt_host,
+            "stt_port": stt_port,
+            "tts_host": tts_host,
+            "tts_port": tts_port,
+            "tts_voice": tts_voice,
+            "audio_device": audio_device,
+            "db_host": db_host,
+            "db_port": db_port,
+            "db_name": db_name,
+            "db_user": db_user,
+            "db_password": db_password,
+            "camera_index": camera_index,
+            "face_threshold": face_threshold / 100.0,
+        }
+
+    def _get_qlineedits(self, parent):
+        """Recursively find all QLineEdit widgets in a widget tree."""
+        result = []
+        for child in parent.findChildren(QLineEdit):
+            result.append(child)
+        return result
+
+    def _test_connection(self):
+        """Test database connection with current settings."""
+        values = self._get_values()
+
+        # Only test DB since LLM/STT/TTS are async
+        host = values.get("db_host", "localhost")
+        port = values.get("db_port", 3306)
+        user = values.get("db_user", "root")
+        password = values.get("db_password", "")
+        dbname = values.get("db_name", "test")
+
+        self.test_btn.setEnabled(False)
+        self.test_btn.setText("⏳ Testing...")
+
+        try:
+            import pymysql
+            conn = pymysql.connect(
+                host=host,
+                port=port,
+                user=user,
+                password=password,
+                database=dbname,
+                cursorclass=pymysql.cursors.DictCursor,
+            )
+            with conn.cursor() as cur:
+                cur.execute("SELECT VERSION()")
+                version = cur.fetchone()["VERSION()"]
+
+            QMessageBox.information(
+                self,
+                "Connection Successful",
+                f"Connected to MariaDB {version}\n\n"
+                f"Host: {host}:{port}\n"
+                f"Database: {dbname}\n"
+                f"User: {user}"
+            )
+            self.test_btn.setText("✅ Connected")
+        except pymysql.Error as e:
+            QMessageBox.critical(
+                self,
+                "Connection Failed",
+                f"Error: {e}\n\n"
+                f"Check:\n"
+                f"• Host: {host}:{port}\n"
+                f"• User: {user}\n"
+                f"• Password\n"
+                f"• Database: {dbname}"
+            )
+            self.test_btn.setText("❌ Failed")
+        finally:
+            self.test_btn.setEnabled(True)
+
+    def _save_settings(self):
+        """Save settings and close dialog."""
+        values = self._get_values()
+
+        if not values:
+            QMessageBox.warning(self, "Error", "No configuration available to save.")
+            return
+
+        # Apply settings to agent config
+        if self.agent_config:
+            # LLM
+            if values.get("llm_base_url"):
+                self.agent_config.llm_base_url = values["llm_base_url"]
+            if values.get("llm_api_key"):
+                self.agent_config.llm_api_key = values["llm_api_key"]
+            if values.get("llm_model"):
+                self.agent_config.llm_model = values["llm_model"]
+
+            # STT
+            stt_config = self.agent_config.stt
+            if stt_config:
+                if values.get("stt_host"):
+                    stt_config.host = values["stt_host"]
+                stt_config.port = values.get("stt_port", stt_config.port)
+
+            # TTS
+            tts_config = self.agent_config.tts
+            if tts_config:
+                if values.get("tts_host"):
+                    tts_config.host = values["tts_host"]
+                tts_config.port = values.get("tts_port", tts_config.port)
+
+            # Audio
+            audio_config = self.agent_config.audio
+            if audio_config:
+                audio_config.device = values.get("audio_device", audio_config.device)
+
+            # DB
+            self.agent_config.profile_db_host = values.get("db_host", self.agent_config.profile_db_host)
+            self.agent_config.profile_db_port = values.get("db_port", self.agent_config.profile_db_port)
+            self.agent_config.profile_db_name = values.get("db_name", self.agent_config.profile_db_name)
+            self.agent_config.profile_db_user = values.get("db_user", self.agent_config.profile_db_user)
+            self.agent_config.profile_db_password = values.get("db_password", self.agent_config.profile_db_password)
+
+            # Face
+            # Face config is passed separately, but we store camera_index on it
+            # The FaceConfig is not part of AgentConfig, so save it on the dialog for later use
+            self._saved_camera_index = values.get("camera_index", 0)
+            self._saved_face_threshold = values.get("face_threshold", 0.75)
+
+        QMessageBox.information(
+            self,
+            "Settings Saved",
+            "Settings have been saved.\n\n"
+            "Some changes require restarting the application to take effect."
+        )
+        self.accept()
