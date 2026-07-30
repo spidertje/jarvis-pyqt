@@ -50,6 +50,7 @@ class AgentConfig:
     llm_model: Optional[str] = None
     # STT silence timeout
     silence_timeout: float = 2.0
+    palette_index: Optional[int] = None  # index into appearance palette list
     # Default system prompt (used when no profile is active)
     default_system_prompt: str = "You are Jarvis, a helpful AI assistant."
 

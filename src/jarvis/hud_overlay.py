@@ -91,8 +91,19 @@ class HUDOverlay(QWidget):
         self._timer.start(1000 // 60)
 
     # ── State management ─────────────────────────────────────────────
-    def set_state(self, state: JarvisState):
-        """Set the current HUD state. Triggers wave rings on SPEAKING."""
+    +    def set_palette_hue(self, hue: int):
+    +        """Set a fixed hue for the HUD palette (overrides automatic color)."""
+    +        self._palette_hue = hue
+    +        self.update()
+    +
+    +    def clear_palette_hue(self):
+    +        """Clear custom palette hue and revert to automatic color selection."""
+    +        if hasattr(self, '_palette_hue'):
+    +            delattr(self, '_palette_hue')
+    +            self.update()
+    +
+         def set_state(self, state: JarvisState):
+             """Set the current HUD state. Triggers wave rings on SPEAKING."""
         self._state = state
         if state == JarvisState.SPEAKING:
             # Emit 3 concentric wave rings
@@ -194,7 +205,10 @@ class HUDOverlay(QWidget):
         act = self._activity
 
         # Color: profile hue overrides default cyan when active
-        if self._profile_name:
+        if hasattr(self, '_palette_hue'):
+            hue = self._palette_hue
+            sat = 85
+        elif self._profile_name:
             hue = self._profile_hue
             sat = 85
         elif act < 0.4:
@@ -485,3 +499,15 @@ class HUDOverlay(QWidget):
         """Clear active profile."""
         self._profile_name = ""
         self._profile_hue = 182
+        self._palette_hue = None  # Optional fixed hue from appearance settings
+
+    def set_palette_hue(self, hue: int):
+        """Set a fixed hue for the HUD palette (overrides automatic color)."""
+        self._palette_hue = hue
+        self.update()
+
+    def clear_palette_hue(self):
+        """Clear custom palette hue and revert to automatic color selection."""
+        if hasattr(self, '_palette_hue'):
+            delattr(self, '_palette_hue')
+        self.update()

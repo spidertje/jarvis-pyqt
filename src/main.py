@@ -163,6 +163,13 @@ class JarvisApp(QWidget):
         # Build agent config (env vars override defaults)
         agent_config = AgentConfig()
         self.agent = JarvisAgent(agent_config)
+        # Apply palette hue from agent config if available
+        if hasattr(agent_config, 'palette_index') and agent_config.palette_index is not None:
+            # Map index to hue (same as in settings)
+            palette_hues = [182, 30, 120, 250, 200, 0, 80, 220, 40, 60]  # cyan, copper, emerald, violet, matrix, red, green, blue, yellow, orange
+            idx = agent_config.palette_index
+            if 0 <= idx < len(palette_hues):
+                self.hud.set_palette_hue(palette_hues[idx])
 
         # Start async event loop in background thread
         self.event_loop_thread = EventLoopThread()
