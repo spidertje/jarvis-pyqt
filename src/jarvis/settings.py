@@ -76,6 +76,7 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._build_audio_tab(), "🔈 Audio")
         self.tabs.addTab(self._build_db_tab(), "🗄 Database")
         self.tabs.addTab(self._build_face_tab(), "👁 Face")
+        self.tabs.addTab(self._build_appearance_tab(), "🎨 Appearance")
 
         layout.addWidget(self.tabs)
 
@@ -647,6 +648,74 @@ class SettingsDialog(QDialog):
         finally:
             self.test_btn.setEnabled(True)
 
+    def _build_appearance_tab(self):
+        """Appearance configuration tab for color schemes."""
+        config = self.agent_config
+        if not config:
+            return QWidget()
+
+        group = self._make_group("Appearance & Themes", "🎨")
+        layout = QVBoxLayout(group)
+
+        # Palette selector
+        lbl = QLabel("Color Palette:")
+        lbl.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        layout.addWidget(lbl)
+
+        self.palette_combo = QComboBox()
+        self.palette_combo.setFixedHeight(30)
+        self.palette_combo.setStyleSheet("""
+            QComboBox {
+                background: rgba(0, 0, 0, 60);
+                border: 1px solid rgba(0, 200, 255, 80);
+                border-radius: 4px;
+                padding: 6px 10px;
+                color: #e0e0e0;
+                font-size: 13px;
+            }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 20px;
+                border-left-width: 1px;
+                border-left-color: rgba(0, 200, 255, 80);
+                border-left-style: solid;
+                border-top-right-radius: 3px;
+                border-bottom-right-radius: 3px;
+            }
+            QComboBox QAbstractItemView {
+                background: rgba(0, 0, 0, 80);
+                selection-background-color: rgba(0, 200, 255, 150);
+            }
+        """)
+        # Define 10 high-contrast hues (HSL hue values 0-360)
+        self._palette_hues = [182, 30, 120, 250, 200, 0, 80, 220, 40, 60]  # cyan, copper, emerald, violet, matrix, red, green, blue, yellow, orange
+        self._palette_names = ["Cyan/Teal", "Copper/Amber", "Emerald/Teal", "Violet/Purple", "Matrix Green", "Red", "Green", "Blue", "Yellow", "Orange"]
+        for name in self._palette_names:
+            self.palette_combo.addItem(name)
+        # Set current index from config if available
+        if hasattr(config, 'palette_index') and config.palette_index is not None:
+            idx = config.palette_index
+            if 0 <= idx < len(self._palette_names):
+                self.palette_combo.setCurrentIndex(idx)
+        else:
+            self.palette_combo.setCurrentIndex(0)  # default to first
+        # Connect signal to update HUD and config
+        self.palette_combo.currentIndexChanged.connect(self._on_palette_changed)
+        layout.addWidget(self.palette_combo)
+
+        layout.addStretch()
+        return group
+
+    def _on_palette_changed(self, index: int):
+        """Called when the user selects a different palette in the appearance tab."""
+        hue = self._palette_hues[index] if hasattr(self, '_palette_hues') and index < len(self._palette_hues) else 0
+        # Update HUD overlay if it exists
+        if hasattr(self, 'agent') and hasattr(self.agent, 'hud') and self.agent.hud:
+            self.agent.hud.set_palette_hue(hue)
+        # Store the index in agent config for persistence
+        if self.agent_config:
+            self.agent_config.palette_index = index
     def _save_settings(self):
         """Save settings and close dialog."""
         values = self._get_values()

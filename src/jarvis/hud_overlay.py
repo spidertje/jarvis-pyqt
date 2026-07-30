@@ -91,19 +91,19 @@ class HUDOverlay(QWidget):
         self._timer.start(1000 // 60)
 
     # ── State management ─────────────────────────────────────────────
-    +    def set_palette_hue(self, hue: int):
-    +        """Set a fixed hue for the HUD palette (overrides automatic color)."""
-    +        self._palette_hue = hue
-    +        self.update()
-    +
-    +    def clear_palette_hue(self):
-    +        """Clear custom palette hue and revert to automatic color selection."""
-    +        if hasattr(self, '_palette_hue'):
-    +            delattr(self, '_palette_hue')
-    +            self.update()
-    +
-         def set_state(self, state: JarvisState):
-             """Set the current HUD state. Triggers wave rings on SPEAKING."""
+    def set_palette_hue(self, hue: int):
+        """Set a fixed hue for the HUD palette (overrides automatic color)."""
+        self._palette_hue = hue
+        self.update()
+
+    def clear_palette_hue(self):
+        """Clear custom palette hue and revert to automatic color selection."""
+        if hasattr(self, '_palette_hue'):
+            delattr(self, '_palette_hue')
+            self.update()
+
+    def set_state(self, state: JarvisState):
+        """Set the current HUD state. Triggers wave rings on SPEAKING."""
         self._state = state
         if state == JarvisState.SPEAKING:
             # Emit 3 concentric wave rings
