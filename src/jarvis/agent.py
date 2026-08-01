@@ -53,6 +53,10 @@ class AgentConfig:
     palette_index: Optional[int] = None  # index into appearance palette list
     # Default system prompt (used when no profile is active)
     default_system_prompt: str = "You are Jarvis, a helpful AI assistant."
+    # Contrast boost multiplier for HUD saturation (100 = normal)
+    contrast_boost: int = 100
+    # TTS voice (Piper voice name)
+    tts_voice: str = "en_US-lessac-medium"
 
 
 class JarvisAgent:
@@ -63,9 +67,10 @@ class JarvisAgent:
     Supports profile switching based on face recognition.
     """
 
-    def __init__(self, config: Optional[AgentConfig] = None):
+    def __init__(self, config: Optional[AgentConfig] = None, hud=None):
         self.config = config or AgentConfig()
         self.state = JarvisState.IDLE
+        self.hud = hud
         self._state_callbacks: List[Callable] = []
 
         # Resolve None config values from env vars
@@ -98,6 +103,8 @@ class JarvisAgent:
         chat_cfg.timeout = self.config.chat.timeout
         self.chat = ChatClient(chat_cfg)
         self.stt = WhisperSTT(self.config.stt)
+        if hasattr(self.config, 'tts_voice') and self.config.tts_voice:
+            self.config.tts.voice = self.config.tts_voice
         self.tts = PiperTTS(self.config.tts)
         self.audio = AudioPlayer(self.config.audio)
 

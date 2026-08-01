@@ -3,12 +3,14 @@ Jarvis Settings — Preferences dialog for API endpoints and DB config.
 """
 
 import os
+import urllib.request
+import json
 from typing import Optional, Callable
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QSpinBox, QPushButton,
     QGroupBox, QMessageBox, QFrame, QTabWidget, QWidget,
-    QComboBox
+    QComboBox, QSlider
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont, QColor
@@ -16,15 +18,37 @@ from PyQt6.QtGui import QFont, QColor
 from jarvis.face import FaceConfig
 
 
+def _fetch_piper_voices(host: str = "127.0.0.1", port: int = 10200) -> list[str]:
+    """Return a list of available Piper voice names from the local Wyoming TTS server.
+    Falls back to scanning the local voice directory if the server is unreachable."""
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/models", timeout=2) as resp:
+            data = json.load(resp)
+            voices = sorted([m["name"] for m in data])
+            if voices:
+                return voices
+    except Exception:
+        pass
+    voice_dir = os.path.expanduser("~/.local/share/piper/voices")
+    if os.path.isdir(voice_dir):
+        voices = sorted([d for d in os.listdir(voice_dir)
+                           if os.path.isdir(os.path.join(voice_dir, d))])
+        if voices:
+            return voices
+    # final fallback: return a known default so the combo is never empty
+    return ["en_US-lessac-medium"]
+
+
 class SettingsDialog(QDialog):
     """Settings/preferences dialog for Jarvis configuration."""
 
-    def __init__(self, agent_config=None, parent=None):
+    def __init__(self, agent_config=None, agent=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Jarvis — Settings")
         self.setMinimumSize(500, 450)
         self.setModal(True)
         self.agent_config = agent_config
+        self.agent = agent
         # Face tab callback — caller sets these before showing
         self.face_config: Optional[FaceConfig] = None
         self.on_face_restart: Optional[Callable] = None
@@ -335,6 +359,40 @@ class SettingsDialog(QDialog):
         layout.addWidget(voice_label)
         layout.addWidget(self.voice_field)
 
+        # Piper voice selector
+        voice_label = QLabel("Piper Voice:")
+        voice_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        layout.addWidget(voice_label)
+
+        self.piper_voice_combo = QComboBox()
+        self.piper_voice_combo.setMinimumWidth(200)
+        self.piper_voice_combo.setStyleSheet("""
+            QComboBox {
+                background: rgba(0,0,0,60);
+                border: 1px solid rgba(0,200,255,80);
+                border-radius: 4px;
+                padding: 4px 8px;
+                color: #e0e0e0;
+                font-size: 13px;
+            }
+            QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right; width: 20px;
+                border-left-width: 1px; border-left-color: rgba(0,200,255,80);
+                border-left-style: solid; border-top-right-radius: 3px; border-bottom-right-radius: 3px; }
+            QComboBox QAbstractItemView {
+                background: rgba(0,0,0,80);
+                selection-background-color: rgba(0,200,255,150);
+            }
+        """)
+        # Populate
+        for v in _fetch_piper_voices():
+            self.piper_voice_combo.addItem(v)
+        # Set current value from config (if present)
+        if self.agent_config and hasattr(self.agent_config, "tts_voice"):
+            idx = self.piper_voice_combo.findText(self.agent_config.tts_voice)
+            if idx >= 0:
+                self.piper_voice_combo.setCurrentIndex(idx)
+        layout.addWidget(self.piper_voice_combo)
+
         layout.addStretch()
         return group
 
@@ -530,7 +588,13 @@ class SettingsDialog(QDialog):
         tts_widgets = self._get_qlineedits(tts_group)
         tts_host = tts_widgets[0].text() if len(tts_widgets) > 0 else ""
         tts_port = self.tts_port_spin.value() if hasattr(self, 'tts_port_spin') else 10200
-        tts_voice = self.voice_field.text() if hasattr(self, 'voice_field') else "en_US-lessac-medium"
+        tts_voice = self.voice_field.text().strip()
+        if hasattr(self, 'piper_voice_combo'):
+            combo_text = self.piper_voice_combo.currentText().strip()
+            if combo_text and not tts_voice:
+                tts_voice = combo_text
+        if not tts_voice:
+            tts_voice = "en_US-lessac-medium"
 
         # Audio: output_device
         audio_device = self.audio_device_spin.value() if hasattr(self, 'audio_device_spin') else -1
@@ -705,6 +769,86 @@ class SettingsDialog(QDialog):
         self.palette_combo.currentIndexChanged.connect(self._on_palette_changed)
         layout.addWidget(self.palette_combo)
 
+        # Contrast boost slider
+        layout.addSpacing(12)
+        contrast_label = QLabel("Contrast Boost:")
+        contrast_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        layout.addWidget(contrast_label)
+
+        contrast_row = QHBoxLayout()
+        self.contrast_slider = QSlider(Qt.Orientation.Horizontal)
+        self.contrast_slider.setRange(80, 140)  # 80% to 140% of base saturation
+        self.contrast_slider.setValue(100)
+        self.contrast_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.contrast_slider.setTickInterval(10)
+        self.contrast_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                background: rgba(0, 200, 255, 40);
+                height: 4px;
+                border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                background: rgba(0, 200, 255, 180);
+                width: 14px;
+                height: 14px;
+                margin: -5px 0;
+                border-radius: 7px;
+            }
+            QSlider::sub-page:horizontal {
+                background: rgba(0, 200, 255, 100);
+                border-radius: 2px;
+            }
+        """)
+        # Read current contrast from config
+        current_contrast = getattr(self.agent_config, "contrast_boost", 100) if self.agent_config else 100
+        self.contrast_slider.setValue(int(current_contrast))
+        self.contrast_value_label = QLabel(f"{int(current_contrast)}%")
+        self.contrast_value_label.setStyleSheet("color: rgba(200, 220, 240, 200); font-size: 12px; min-width: 35px;")
+        self.contrast_slider.valueChanged.connect(self._on_contrast_changed)
+        contrast_row.addWidget(self.contrast_slider, stretch=1)
+        contrast_row.addWidget(self.contrast_value_label)
+        layout.addLayout(contrast_row)
+
+        # Contrast boost slider
+        layout.addSpacing(12)
+        contrast_label = QLabel("Contrast Boost:")
+        contrast_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        layout.addWidget(contrast_label)
+
+        contrast_row = QHBoxLayout()
+        self.contrast_slider = QSlider(Qt.Orientation.Horizontal)
+        self.contrast_slider.setRange(80, 140)  # 80% to 140% of base saturation
+        self.contrast_slider.setValue(100)
+        self.contrast_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.contrast_slider.setTickInterval(10)
+        self.contrast_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                background: rgba(0, 200, 255, 40);
+                height: 4px;
+                border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                background: rgba(0, 200, 255, 180);
+                width: 14px;
+                height: 14px;
+                margin: -5px 0;
+                border-radius: 7px;
+            }
+            QSlider::sub-page:horizontal {
+                background: rgba(0, 200, 255, 100);
+                border-radius: 2px;
+            }
+        """)
+        # Read current contrast from config
+        current_contrast = getattr(self.agent_config, 'contrast_boost', 100) if self.agent_config else 100
+        self.contrast_slider.setValue(int(current_contrast))
+        self.contrast_value_label = QLabel(f"{int(current_contrast)}%")
+        self.contrast_value_label.setStyleSheet("color: rgba(200, 220, 240, 200); font-size: 12px; min-width: 35px;")
+        self.contrast_slider.valueChanged.connect(self._on_contrast_changed)
+        contrast_row.addWidget(self.contrast_slider, stretch=1)
+        contrast_row.addWidget(self.contrast_value_label)
+        layout.addLayout(contrast_row)
+
         layout.addStretch()
         return group
 
@@ -717,6 +861,27 @@ class SettingsDialog(QDialog):
         # Store the index in agent config for persistence
         if self.agent_config:
             self.agent_config.palette_index = index
+
+    def _on_contrast_changed(self, value: int):
+        """Called when the contrast boost slider is moved."""
+        if hasattr(self, "contrast_value_label"):
+            self.contrast_value_label.setText(f"{value}%")
+        if self.agent_config:
+            self.agent_config.contrast_boost = value
+        # Apply live to HUD
+        if self.agent is not None and hasattr(self.agent, "hud") and self.agent.hud:
+            self.agent.hud.set_contrast_factor(value / 100.0)
+
+    def _on_contrast_changed(self, value: int):
+        """Called when the contrast boost slider is moved."""
+        if hasattr(self, 'contrast_value_label'):
+            self.contrast_value_label.setText(f"{value}%")
+        if self.agent_config:
+            self.agent_config.contrast_boost = value
+        # Apply live to HUD
+        if self.agent is not None and hasattr(self.agent, 'hud') and self.agent.hud:
+            self.agent.hud.set_contrast_factor(value / 100.0)
+
     def _save_settings(self):
         """Save settings and close dialog."""
         values = self._get_values()
@@ -748,6 +913,12 @@ class SettingsDialog(QDialog):
                 if values.get("tts_host"):
                     tts_config.host = values["tts_host"]
                 tts_config.port = values.get("tts_port", tts_config.port)
+                if values.get("tts_voice"):
+                    tts_config.voice = values["tts_voice"]
+
+            # Update the agent's TTS object immediately so the next speak uses the new voice
+            if self.agent and hasattr(self.agent, 'tts'):
+                self.agent.tts.voice = values.get("tts_voice", self.agent.tts.voice)
 
             # Audio
             audio_config = self.agent_config.audio
@@ -769,11 +940,20 @@ class SettingsDialog(QDialog):
             # TTS voice model (stored as custom attr since WyomingConfig doesn't have it)
             if hasattr(self, 'voice_field') and self.agent_config:
                 self.agent_config._tts_voice = self.voice_field.text()
+            # Also persist the Piper voice combo selection at the top level for clarity
+            if hasattr(self, 'piper_voice_combo') and self.agent_config:
+                self.agent_config.tts_voice = self.piper_voice_combo.currentText()
 
             # Face — just update the face_config object (caller handles restart)
             if self.face_config:
                 self.face_config.camera_index = self.camera_spin.value()
                 self.face_config.confidence_threshold = float(self.face_thresh_spin.value())
+
+            # Palette and contrast
+            if hasattr(self, 'palette_combo'):
+                self.agent_config.palette_index = self.palette_combo.currentIndex()
+            if hasattr(self, 'contrast_slider'):
+                self.agent_config.contrast_boost = self.contrast_slider.value()
 
         QMessageBox.information(
             self,
