@@ -18,7 +18,7 @@ from PyQt6.QtGui import QFont, QColor
 from jarvis.face import FaceConfig
 
 
-def _fetch_piper_voices(host: str = "127.0.0.1", port: int = 10200) -> list[str]:
+def _fetch_piper_voices(host: str = "192.168.55.41", port: int = 10200) -> list[str]:
     """Return a list of available Piper voice names from the local Wyoming TTS server.
     Falls back to scanning the local voice directory if the server is unreachable."""
     try:
