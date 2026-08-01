@@ -1,10 +1,10 @@
 """
-Jarvis Settings — Preferences dialog for API endpoints and DB config.
+Jarvis Settings - Preferences dialog for API endpoints and DB config.
 """
 
 import os
-import urllib.request
 import json
+import socket
 from typing import Optional, Callable
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -19,22 +19,42 @@ from jarvis.face import FaceConfig
 
 
 def _fetch_piper_voices(host: str = "192.168.55.41", port: int = 10200) -> list[str]:
-    """Return a list of available Piper voice names from the local Wyoming TTS server.
-    Falls back to scanning the local voice directory if the server is unreachable."""
+    """Return a list of available Piper voice names from the Wyoming TTS server.
+    Uses the Wyoming protocol (send {"type":"describe"}, parse the TTS voice list)."""
     try:
-        with urllib.request.urlopen(f"http://{host}:{port}/models", timeout=2) as resp:
-            data = json.load(resp)
-            voices = sorted([m["name"] for m in data])
-            if voices:
-                return voices
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect((host, port))
+        # Send describe event
+        sock.sendall(b'{"type": "describe"}\n')
+        # Read header line
+        header = b""
+        while not header.endswith(b"\n"):
+            ch = sock.recv(1)
+            if not ch:
+                break
+            header += ch
+        if header:
+            hdr = json.loads(header.decode("utf-8"))
+            data_len = hdr.get("data_length", 0)
+            if data_len > 0:
+                data = b""
+                while len(data) < data_len:
+                    chunk = sock.recv(min(4096, data_len - len(data)))
+                    if not chunk:
+                        break
+                    data += chunk
+                sock.close()
+                info = json.loads(data.decode("utf-8"))
+                # Extract TTS voice names
+                for svc in info.get("tts", []):
+                    if svc.get("name") == "piper":
+                        voices = sorted([v["name"] for v in svc.get("voices", []) if v.get("installed")])
+                        if voices:
+                            return voices
+        sock.close()
     except Exception:
         pass
-    voice_dir = os.path.expanduser("~/.local/share/piper/voices")
-    if os.path.isdir(voice_dir):
-        voices = sorted([d for d in os.listdir(voice_dir)
-                           if os.path.isdir(os.path.join(voice_dir, d))])
-        if voices:
-            return voices
     # final fallback: return a known default so the combo is never empty
     return ["en_US-lessac-medium"]
 
