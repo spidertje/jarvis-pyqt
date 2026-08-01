@@ -88,9 +88,9 @@ class PiperTTS:
         
         Returns raw PCM audio bytes or None on failure.
         """
-        if not self._connected:
-            if not await self.connect():
-                return None
+        # Connect for each utterance so voice parameter takes effect
+        if not await self.connect():
+            return None
 
         try:
             # Send synthesize request
@@ -131,5 +131,7 @@ class PiperTTS:
 
         except Exception as e:
             logger.error(f"Piper TTS error: {e}")
-            self._connected = False
             return None
+        finally:
+            # Disconnect after each utterance so next speak() can use a different voice
+            await self.disconnect()
