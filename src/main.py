@@ -162,7 +162,7 @@ class JarvisApp(QWidget):
         # Agent
         # Build agent config (env vars override defaults)
         agent_config = AgentConfig()
-        self.agent = JarvisAgent(agent_config)
+        self.agent = JarvisAgent(agent_config, hud=self.hud)
         # Apply palette hue from agent config if available
         if hasattr(agent_config, 'palette_index') and agent_config.palette_index is not None:
             # Map index to hue (same as in settings)
@@ -357,7 +357,7 @@ class JarvisApp(QWidget):
 
     def _open_settings(self):
         """Open the settings/preferences dialog."""
-        dialog = SettingsDialog(agent_config=self.agent.config, parent=self)
+        dialog = SettingsDialog(agent_config=self.agent.config, agent=self.agent, parent=self)
         dialog.face_config = self._build_face_config()
         dialog.on_face_restart = self._restart_face_thread
         dialog.exec()

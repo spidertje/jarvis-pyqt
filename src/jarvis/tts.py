@@ -23,11 +23,12 @@ logger = logging.getLogger(__name__)
 @dataclass
 class WyomingConfig:
     """Wyoming protocol server configuration."""
-    host: str = "192.168.55.41"
+    host: str = "127.0.0.1"
     port: int = 10200
     sample_rate: int = 16000
     width: int = 2  # 16-bit
     channels: int = 1
+    voice: str = "en_US-lessac-medium"  # Piper voice model name
 
 
 class PiperTTS:
@@ -38,6 +39,7 @@ class PiperTTS:
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
         self._connected = False
+        self.voice: str = config.voice if config and hasattr(config, 'voice') else "en_US-lessac-medium"
 
     async def connect(self, timeout: float = 5.0) -> bool:
         """Connect to Piper via Wyoming protocol."""
@@ -92,7 +94,7 @@ class PiperTTS:
 
         try:
             # Send synthesize request
-            self._send_event("synthesize", {"text": text})
+            self._send_event("synthesize", {"text": text, "voice": self.voice})
             await self._writer.drain()
 
             # Read audio-start

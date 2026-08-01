@@ -46,15 +46,12 @@ class HUDOverlay(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # Window flags: frameless, top-most, don't steal focus
+        # Normal window that stays on top for visibility
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.WindowDoesNotAcceptFocus
+            Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint
         )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setStyleSheet("background: transparent;")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self.setStyleSheet("background-color: #000000;")
         self.resize(800, 600)
 
         # State
@@ -85,6 +82,9 @@ class HUDOverlay(QWidget):
         self._profile_name: str = ""
         self._profile_hue: int = 182  # Default cyan
 
+        # Contrast boost factor (1.0 = no change)
+        self._contrast_factor: float = 1.0
+
         # Timer: 60fps
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -101,6 +101,11 @@ class HUDOverlay(QWidget):
         if hasattr(self, '_palette_hue'):
             delattr(self, '_palette_hue')
             self.update()
+
+    def set_contrast_factor(self, factor: float):
+        """Set contrast factor for HUD saturation (1.0 = default)."""
+        self._contrast_factor = max(0.0, factor)
+        self.update()
 
     def set_state(self, state: JarvisState):
         """Set the current HUD state. Triggers wave rings on SPEAKING."""
@@ -205,19 +210,20 @@ class HUDOverlay(QWidget):
         act = self._activity
 
         # Color: profile hue overrides default cyan when active
-        if hasattr(self, '_palette_hue'):
+        if hasattr(self, '_palette_hue') and self._palette_hue is not None:
             hue = self._palette_hue
-            sat = 85
+            sat = 110
         elif self._profile_name:
             hue = self._profile_hue
-            sat = 85
+            sat = 110
         elif act < 0.4:
             hue = 182  # cyan
         elif act > 0.7:
             hue = 45   # amber
         else:
             hue = 120  # green (transition)
-        sat = 85 + int((1 - act) * 10)
+        sat = int((110 + int((1 - act) * 10)) * self._contrast_factor)
+        sat = min(255, max(0, sat))
 
         # 1. Dark vignette backdrop
         self._draw_vignette(p, cx, cy, act, hue, sat)
