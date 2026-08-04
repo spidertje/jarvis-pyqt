@@ -52,11 +52,14 @@ class AgentConfig:
     silence_timeout: float = 2.0
     palette_index: Optional[int] = None  # index into appearance palette list
     # Default system prompt (used when no profile is active)
-    default_system_prompt: str = "You are Jarvis, a helpful AI assistant."
+    # Loaded from SOUL.md if present, otherwise fallback
+    default_system_prompt: str = ""
     # Contrast boost multiplier for HUD saturation (100 = normal)
     contrast_boost: int = 100
     # TTS voice (Piper voice name)
     tts_voice: str = "en_US-lessac-medium"
+    # Assistant name (extracted from SOUL.md or set via settings)
+    assistant_name: str = "Jarvis"
 
 
 class JarvisAgent:
@@ -99,10 +102,15 @@ class JarvisAgent:
         # Copy all LLM config fields that ChatConfig supports
         chat_cfg.temperature = self.config.chat.temperature
         chat_cfg.max_tokens = self.config.chat.max_tokens
-        chat_cfg.system_prompt = self.config.chat.system_prompt
+        # Don't set system_prompt in ChatConfig - we pass it per-call via messages
+        chat_cfg.system_prompt = ""
         chat_cfg.timeout = self.config.chat.timeout
         self.chat = ChatClient(chat_cfg)
-        self.stt = WhisperSTT(self.config.stt)
+        # STT
+        stt_cfg = self.config.stt
+        if stt_cfg.device is not None and stt_cfg.device < 0:
+            stt_cfg.device = None
+        self.stt = WhisperSTT(stt_cfg)
         if hasattr(self.config, 'tts_voice') and self.config.tts_voice:
             self.config.tts.voice = self.config.tts_voice
         self.tts = PiperTTS(self.config.tts)
@@ -120,11 +128,24 @@ class JarvisAgent:
         # Load profiles
         self.profiles.load_all()
 
+        # Import assistant name from MariaDB (default profile row)
+        db_name = self.profiles.get_default_assistant_name()
+        if db_name:
+            self.config.assistant_name = db_name
+            logger.info(f"Assistant name loaded from DB: {db_name}")
+
+        # HUD - update with assistant name from DB
+        self.hud.set_assistant_name(self.config.assistant_name)
+
+        # Load default profile's system prompt at startup
+        default_profile = self.profiles.get_default()
+        if default_profile:
+            self._system_prompt = default_profile.system_prompt
+        else:
+            self._system_prompt = self.config.default_system_prompt
+
         # Active profile
         self._active_profile: Optional[Profile] = None
-
-        # Current system prompt (may be overridden by profile)
-        self._system_prompt: str = self.config.default_system_prompt
 
         # Conversation history (per profile)
         self._messages: List[Dict[str, str]] = []
@@ -149,7 +170,7 @@ class JarvisAgent:
         """
         Switch to a profile by name.
 
-        Loads the profile's system prompt and chat history.
+        Loads the profile's system prompt, chat history, and assistant name.
         """
         if not self.profiles.switch(name):
             return False
@@ -157,10 +178,15 @@ class JarvisAgent:
         self._active_profile = self.profiles.get(name)
         if self._active_profile:
             self._system_prompt = self._active_profile.system_prompt
+            self.config.assistant_name = self._active_profile.assistant_name
+            # Update HUD with new assistant name
+            if self.hud:
+                self.hud.set_assistant_name(self.config.assistant_name)
             self._messages = list(self._active_profile.chat_history)
             logger.info(
                 f"Profile switched to: {name} "
-                f"(prompt: {len(self._system_prompt)} chars, "
+                f"(assistant: {self.config.assistant_name}, "
+                f"prompt: {len(self._system_prompt)} chars, "
                 f"history: {len(self._messages)} messages)"
             )
         return True
@@ -169,8 +195,18 @@ class JarvisAgent:
         """Clear active profile (return to default)."""
         self.profiles.clear()
         self._active_profile = None
-        self._system_prompt = self.config.default_system_prompt
         self._messages = []
+        # Reset from DB default profile
+        db_name = self.profiles.get_default_assistant_name()
+        if db_name:
+            self.config.assistant_name = db_name
+            self.hud.set_assistant_name(db_name)
+        # Get default profile's system prompt
+        default_profile = self.profiles.get_default()
+        if default_profile:
+            self._system_prompt = default_profile.system_prompt
+        else:
+            self._system_prompt = self.config.default_system_prompt
         logger.info("Profile cleared, back to default")
 
     async def _run_voice(self):

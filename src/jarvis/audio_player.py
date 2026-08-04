@@ -82,12 +82,15 @@ class AudioPlayer:
         max_val = 32767 if width <= 2 else 2147483647
         audio_float = samples.astype(np.float32) / max_val
 
+        # Handle device: -1 means default, pass None to sounddevice
+        device = self.config.device if self.config.device is not None and self.config.device >= 0 else None
+
         try:
             self._stream = self._sd.OutputStream(
                 samplerate=self.config.sample_rate,
                 channels=channels,
                 dtype="float32",
-                device=self.config.device,
+                device=device,
             )
             self._stream.start()
             self._playing = True

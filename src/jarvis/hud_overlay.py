@@ -60,6 +60,9 @@ class HUDOverlay(QWidget):
         self._angle = 0.0
         self._pulse = 0.0
 
+        # Assistant name (displayed top-left)
+        self._assistant_name = "Jarvis"
+
         # Geometry center
         self._cx = 400
         self._cy = 300
@@ -85,10 +88,28 @@ class HUDOverlay(QWidget):
         # Contrast boost factor (1.0 = no change)
         self._contrast_factor: float = 1.0
 
+        # Assistant name (displayed top-left)
+        self._assistant_name = "Jarvis"
+
         # Timer: 60fps
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(1000 // 60)
+
+    def _draw_assistant_name(self, p: QPainter):
+        """Draw the assistant name in the top-left corner."""
+        # Use a semi-transparent white text with a subtle shadow for readability
+        padding = 10
+        font = QFont()
+        font.setPointSize(14)
+        font.setBold(True)
+        p.setFont(font)
+        # Shadow
+        p.setPen(QColor(0, 0, 0, 180))
+        p.drawText(padding + 2, 24 + 2, self._assistant_name)
+        # Main text
+        p.setPen(QColor(255, 255, 255, 230))
+        p.drawText(padding, 24, self._assistant_name)
 
     # ── State management ─────────────────────────────────────────────
     def set_palette_hue(self, hue: int):
@@ -105,6 +126,11 @@ class HUDOverlay(QWidget):
     def set_contrast_factor(self, factor: float):
         """Set contrast factor for HUD saturation (1.0 = default)."""
         self._contrast_factor = max(0.0, factor)
+        self.update()
+
+    def set_assistant_name(self, name: str):
+        """Set the assistant name displayed in the top-left corner."""
+        self._assistant_name = name
         self.update()
 
     def set_state(self, state: JarvisState):
@@ -224,6 +250,9 @@ class HUDOverlay(QWidget):
             hue = 120  # green (transition)
         sat = int((110 + int((1 - act) * 10)) * self._contrast_factor)
         sat = min(255, max(0, sat))
+
+        # 0. Assistant name (top-left)
+        self._draw_assistant_name(p)
 
         # 1. Dark vignette backdrop
         self._draw_vignette(p, cx, cy, act, hue, sat)

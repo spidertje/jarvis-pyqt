@@ -29,6 +29,7 @@ class WyomingConfig:
     sample_rate: int = 16000
     width: int = 2  # 16-bit
     channels: int = 1
+    device: Optional[int] = None  # -1 means default, None means let sounddevice decide
 
 
 class WhisperSTT:

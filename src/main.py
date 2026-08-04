@@ -204,7 +204,7 @@ class JarvisApp(QWidget):
 
     def _setup_ui(self):
         """Set up the foreground UI controls."""
-        self.setWindowTitle("Jarvis")
+        self.setWindowTitle(getattr(self.agent.config, 'assistant_name', 'Jarvis'))
         self.resize(800, 600)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint

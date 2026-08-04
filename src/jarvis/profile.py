@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 class Profile:
     """A person's chat profile."""
     name: str
+    assistant_name: str = "Jarvis"
     system_prompt: str = "You are Jarvis, a helpful AI assistant."
     chat_history: List[Dict[str, str]] = field(default_factory=list)
     accent_hue: int = 182  # Default cyan
@@ -31,8 +32,10 @@ class Profile:
     def to_db_row(self) -> tuple:
         """Convert to DB INSERT/UPDATE row."""
         import json
+        # Map to web frontend schema: name, assistant_name, system_prompt->assistant_full, chat_history, accent_hue, enabled
         return (
             self.name,
+            self.assistant_name,
             self.system_prompt,
             json.dumps(self.chat_history),
             self.accent_hue,
@@ -43,14 +46,66 @@ class Profile:
     def from_db_row(cls, row: dict) -> "Profile":
         """Create Profile from DB row."""
         import json
+        # Map actual DB columns (from web frontend schema) to Profile fields
         history = json.loads(row.get("chat_history", "[]"))
+        # enabled: if column exists use it, else default to True
+        enabled_val = row.get("enabled")
+        if enabled_val is None:
+            enabled_val = True  # Default enabled if column doesn't exist
+        
+        # Build system prompt from assistant_name and assistant_full
+        assistant_name = row.get("assistant_name", "Jarvis")
+        assistant_full = row.get("assistant_full", "")
+        # If system_prompt column exists use it, else generate from name
+        system_prompt = row.get("system_prompt")
+        if not system_prompt:
+            if assistant_full and assistant_full != assistant_name:
+                system_prompt = f"You are {assistant_name}, {assistant_full}. Be helpful, knowledgeable, and direct."
+            else:
+                system_prompt = f"You are {assistant_name}, a helpful AI assistant."
+        
         return cls(
             name=row["name"],
-            system_prompt=row.get("system_prompt", "You are Jarvis, a helpful AI assistant."),
+            assistant_name=assistant_name,
+            system_prompt=system_prompt,
             chat_history=history,
-            accent_hue=row.get("accent_hue", 182),
-            enabled=bool(row.get("enabled", 1)),
+            accent_hue=row.get("accent_hue") or cls._palette_to_hue(row.get("palette", "cyan")),
+            enabled=bool(enabled_val),
         )
+
+    @staticmethod
+    def _palette_to_hue(palette: str) -> int:
+        """Map palette name to hue."""
+        hues = {
+            "cyan": 182,
+            "copper": 30,
+            "emerald": 120,
+            "violet": 250,
+            "matrix": 200,
+            "red": 0,
+            "green": 80,
+            "blue": 220,
+            "yellow": 40,
+            "orange": 60,
+        }
+        return hues.get(palette, 182)
+
+    @staticmethod
+    def _hue_to_palette(hue: int) -> str:
+        """Map hue to palette name (reverse lookup)."""
+        hues = {
+            182: "cyan",
+            30: "copper",
+            120: "emerald",
+            250: "violet",
+            200: "matrix",
+            0: "red",
+            80: "green",
+            220: "blue",
+            40: "yellow",
+            60: "orange",
+        }
+        return hues.get(hue, "cyan")
 
 
 class ProfileManager:
@@ -69,7 +124,7 @@ class ProfileManager:
 
     def _get_db(self) -> pymysql.Connection:
         """Get or create DB connection."""
-        if self._db is None or self._db.closed:
+        if self._db is None or not self._db.open:
             self._db = pymysql.connect(
                 host=self.db_host,
                 port=self.db_port,
@@ -137,17 +192,23 @@ class ProfileManager:
         """Save a profile to DB (upsert)."""
         try:
             db = self._get_db()
-            row = profile.to_db_row()
+            # Use web frontend schema: name, assistant_name, assistant_full (system_prompt), chat_history, accent_hue, enabled
+            # Also need to handle palette (from accent_hue)
+            import json
+            palette = Profile._hue_to_palette(profile.accent_hue)
             with db.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO profiles (name, system_prompt, chat_history, accent_hue, enabled) "
-                    "VALUES (%s, %s, %s, %s, %s) "
+                    "INSERT INTO profiles (name, assistant_name, assistant_full, chat_history, accent_hue, enabled, palette) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s) "
                     "ON DUPLICATE KEY UPDATE "
-                    "system_prompt=VALUES(system_prompt), "
+                    "assistant_name=VALUES(assistant_name), "
+                    "assistant_full=VALUES(assistant_full), "
                     "chat_history=VALUES(chat_history), "
                     "accent_hue=VALUES(accent_hue), "
-                    "enabled=VALUES(enabled)",
-                    row,
+                    "enabled=VALUES(enabled), "
+                    "palette=VALUES(palette)",
+                    (profile.name, profile.assistant_name, profile.system_prompt,
+                     json.dumps(profile.chat_history), profile.accent_hue, int(profile.enabled), palette),
                 )
             db.commit()
             self._profiles[profile.name.lower()] = profile
@@ -176,7 +237,54 @@ class ProfileManager:
         """List all profile names."""
         return list(self._profiles.keys())
 
+    def get_default_assistant_name(self) -> Optional[str]:
+        """Load assistant_name from the default profile row (is_default=1)."""
+        try:
+            db = self._get_db()
+            with db.cursor() as cur:
+                cur.execute("SELECT assistant_name FROM profiles WHERE is_default=1 LIMIT 1")
+                row = cur.fetchone()
+                return row["assistant_name"] if row else None
+        except Exception as e:
+            logger.error(f"Failed to load default assistant name: {e}")
+            return None
+
+    def get_default(self) -> Optional[Profile]:
+        """Get the default profile (is_default=1) as a Profile object."""
+        try:
+            db = self._get_db()
+            with db.cursor() as cur:
+                cur.execute("SELECT * FROM profiles WHERE is_default=1 LIMIT 1")
+                row = cur.fetchone()
+                if row:
+                    return Profile.from_db_row(row)
+                return None
+        except Exception as e:
+            logger.error(f"Failed to load default profile: {e}")
+            return None
+
+    def set_default_assistant_name(self, name: str) -> bool:
+        """Persist assistant_name to the default profile row (is_default=1)."""
+        try:
+            db = self._get_db()
+            with db.cursor() as cur:
+                cur.execute(
+                    "UPDATE profiles SET assistant_name=%s WHERE is_default=1",
+                    (name,),
+                )
+                if cur.rowcount == 0:
+                    cur.execute(
+                        "UPDATE profiles SET assistant_name=%s ORDER BY id LIMIT 1",
+                        (name,),
+                    )
+            db.commit()
+            logger.info(f"Saved assistant name to DB: {name}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save default assistant name: {e}")
+            return False
+
     def close(self):
         """Close DB connection."""
-        if self._db and not self._db.closed:
+        if self._db is not None and self._db.open:
             self._db.close()

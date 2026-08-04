@@ -18,47 +18,6 @@ from PyQt6.QtGui import QFont, QColor
 from jarvis.face import FaceConfig
 
 
-def _fetch_piper_voices(host: str = "192.168.55.41", port: int = 10200) -> list[str]:
-    """Return a list of available Piper voice names from the Wyoming TTS server.
-    Uses the Wyoming protocol (send {"type":"describe"}, parse the TTS voice list)."""
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(5)
-        sock.connect((host, port))
-        # Send describe event
-        sock.sendall(b'{"type": "describe"}\n')
-        # Read header line
-        header = b""
-        while not header.endswith(b"\n"):
-            ch = sock.recv(1)
-            if not ch:
-                break
-            header += ch
-        if header:
-            hdr = json.loads(header.decode("utf-8"))
-            data_len = hdr.get("data_length", 0)
-            if data_len > 0:
-                data = b""
-                while len(data) < data_len:
-                    chunk = sock.recv(min(4096, data_len - len(data)))
-                    if not chunk:
-                        break
-                    data += chunk
-                sock.close()
-                info = json.loads(data.decode("utf-8"))
-                # Extract TTS voice names
-                for svc in info.get("tts", []):
-                    if svc.get("name") == "piper":
-                        voices = sorted([v["name"] for v in svc.get("voices", []) if v.get("installed")])
-                        if voices:
-                            return voices
-        sock.close()
-    except Exception:
-        pass
-    # final fallback: return a known default so the combo is never empty
-    return ["en_US-lessac-medium"]
-
-
 class SettingsDialog(QDialog):
     """Settings/preferences dialog for Jarvis configuration."""
 
@@ -256,6 +215,28 @@ class SettingsDialog(QDialog):
             layout.addWidget(lbl)
             layout.addWidget(field)
 
+        # Assistant name
+        self.assistant_name_field = QLineEdit()
+        self.assistant_name_field.setText(getattr(config, 'assistant_name', 'Jarvis'))
+        self.assistant_name_field.setPlaceholderText("Jarvis")
+        self.assistant_name_field.setStyleSheet("""
+            QLineEdit {
+                background: rgba(0, 0, 0, 60);
+                border: 1px solid rgba(0, 200, 255, 80);
+                border-radius: 4px;
+                padding: 6px 10px;
+                color: #e0e0e0;
+                font-size: 13px;
+            }
+            QLineEdit:focus {
+                border-color: rgba(0, 220, 255, 160);
+            }
+        """)
+        assistant_name_label = QLabel("Assistant Name:")
+        assistant_name_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        layout.addWidget(assistant_name_label)
+        layout.addWidget(self.assistant_name_field)
+
         layout.addStretch()
         return group
 
@@ -295,6 +276,27 @@ class SettingsDialog(QDialog):
         port_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
         layout.addWidget(port_label)
         layout.addWidget(self.stt_port_spin)
+
+        # Input device
+        self.stt_device_spin = QSpinBox()
+        self.stt_device_spin.setRange(-1, 65535)
+        default_stt_dev = config.stt.device if config.stt else None
+        self.stt_device_spin.setValue(default_stt_dev if default_stt_dev is not None else -1)
+        self.stt_device_spin.setSuffix(" (default if -1)")
+        self.stt_device_spin.setFixedHeight(30)
+        self.stt_device_spin.setStyleSheet("""
+            QSpinBox {
+                background: rgba(0, 0, 0, 60);
+                border: 1px solid rgba(0, 200, 255, 80);
+                border-radius: 4px;
+                padding: 4px 8px;
+                color: #e0e0e0;
+            }
+        """)
+        dev_label = QLabel("Input Device Index:")
+        dev_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        layout.addWidget(dev_label)
+        layout.addWidget(self.stt_device_spin)
 
         # Silence timeout
         self.silence_spin = QSpinBox()
@@ -357,10 +359,9 @@ class SettingsDialog(QDialog):
         layout.addWidget(port_label)
         layout.addWidget(self.tts_port_spin)
 
-        # Voice model
-        self.voice_field = QLineEdit()
-        self.voice_field.setText("en_US-lessac-medium")
-        self.voice_field.setPlaceholderText("en_US-lessac-medium")
+        # Voice model (readonly, default used)
+        self.voice_field = QLineEdit("en_US-lessac-medium")
+        self.voice_field.setReadOnly(True)
         self.voice_field.setStyleSheet("""
             QLineEdit {
                 background: rgba(0, 0, 0, 60);
@@ -370,48 +371,13 @@ class SettingsDialog(QDialog):
                 color: #e0e0e0;
                 font-size: 13px;
             }
-            QLineEdit:focus {
-                border-color: rgba(0, 220, 255, 160);
-            }
         """)
-        voice_label = QLabel("Voice Model:")
+        voice_label = QLabel("Voice Model (readonly, default):")
         voice_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
         layout.addWidget(voice_label)
         layout.addWidget(self.voice_field)
 
-        # Piper voice selector
-        voice_label = QLabel("Piper Voice:")
-        voice_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
-        layout.addWidget(voice_label)
-
-        self.piper_voice_combo = QComboBox()
-        self.piper_voice_combo.setMinimumWidth(200)
-        self.piper_voice_combo.setStyleSheet("""
-            QComboBox {
-                background: rgba(0,0,0,60);
-                border: 1px solid rgba(0,200,255,80);
-                border-radius: 4px;
-                padding: 4px 8px;
-                color: #e0e0e0;
-                font-size: 13px;
-            }
-            QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right; width: 20px;
-                border-left-width: 1px; border-left-color: rgba(0,200,255,80);
-                border-left-style: solid; border-top-right-radius: 3px; border-bottom-right-radius: 3px; }
-            QComboBox QAbstractItemView {
-                background: rgba(0,0,0,80);
-                selection-background-color: rgba(0,200,255,150);
-            }
-        """)
-        # Populate
-        for v in _fetch_piper_voices():
-            self.piper_voice_combo.addItem(v)
-        # Set current value from config (if present)
-        if self.agent_config and hasattr(self.agent_config, "tts_voice"):
-            idx = self.piper_voice_combo.findText(self.agent_config.tts_voice)
-            if idx >= 0:
-                self.piper_voice_combo.setCurrentIndex(idx)
-        layout.addWidget(self.piper_voice_combo)
+        # Piper voice selector removed per user request
 
         layout.addStretch()
         return group
@@ -427,6 +393,7 @@ class SettingsDialog(QDialog):
 
         # Output device
         self.audio_device_spin = QSpinBox()
+        self.audio_device_spin.setRange(-1, 65535)
         default_dev = config.audio.device if config.audio else None
         self.audio_device_spin.setValue(default_dev if default_dev is not None else -1)
         self.audio_device_spin.setSuffix(" (default if -1)")
@@ -596,12 +563,15 @@ class SettingsDialog(QDialog):
         llm_base_url = llm_widgets[0].text() if len(llm_widgets) > 0 else config.get("llm_base_url", "")
         llm_api_key = llm_widgets[1].text() if len(llm_widgets) > 1 else config.get("llm_api_key", "")
         llm_model = llm_widgets[2].text() if len(llm_widgets) > 2 else config.get("llm_model", "auto")
+        # Assistant name is the 4th field (index 3)
+        assistant_name = llm_widgets[3].text() if len(llm_widgets) > 3 else config.get("assistant_name", "Jarvis")
 
-        # STT: host (widget[0]), port (self.stt_port_spin)
+        # STT: host (widget[0]), port (self.stt_port_spin), input device (self.stt_device_spin)
         stt_group = self.tabs.widget(1)
         stt_widgets = self._get_qlineedits(stt_group)
         stt_host = stt_widgets[0].text() if len(stt_widgets) > 0 else ""
         stt_port = self.stt_port_spin.value() if hasattr(self, 'stt_port_spin') else 10300
+        stt_device = self.stt_device_spin.value() if hasattr(self, 'stt_device_spin') else -1
 
         # TTS: host (widget[0]), port (self.tts_port_spin), voice (self.voice_field)
         tts_group = self.tabs.widget(2)
@@ -609,10 +579,6 @@ class SettingsDialog(QDialog):
         tts_host = tts_widgets[0].text() if len(tts_widgets) > 0 else ""
         tts_port = self.tts_port_spin.value() if hasattr(self, 'tts_port_spin') else 10200
         tts_voice = self.voice_field.text().strip()
-        if hasattr(self, 'piper_voice_combo'):
-            combo_text = self.piper_voice_combo.currentText().strip()
-            if combo_text and not tts_voice:
-                tts_voice = combo_text
         if not tts_voice:
             tts_voice = "en_US-lessac-medium"
 
@@ -641,8 +607,10 @@ class SettingsDialog(QDialog):
             "llm_base_url": llm_base_url,
             "llm_api_key": llm_api_key,
             "llm_model": llm_model,
+            "assistant_name": assistant_name,
             "stt_host": stt_host,
             "stt_port": stt_port,
+            "stt_device": stt_device,
             "tts_host": tts_host,
             "tts_port": tts_port,
             "tts_voice": tts_voice,
@@ -919,6 +887,15 @@ class SettingsDialog(QDialog):
                 self.agent_config.llm_api_key = values["llm_api_key"]
             if values.get("llm_model"):
                 self.agent_config.llm_model = values["llm_model"]
+            # Assistant name
+            if values.get("assistant_name"):
+                self.agent_config.assistant_name = values["assistant_name"]
+                # Persist to MariaDB so it survives restarts
+                if self.agent and hasattr(self.agent, 'profiles'):
+                    self.agent.profiles.set_default_assistant_name(values["assistant_name"])
+                # Update HUD immediately
+                if self.agent and hasattr(self.agent, 'hud'):
+                    self.agent.hud.set_assistant_name(values["assistant_name"])
 
             # STT
             stt_config = self.agent_config.stt
@@ -926,6 +903,8 @@ class SettingsDialog(QDialog):
                 if values.get("stt_host"):
                     stt_config.host = values["stt_host"]
                 stt_config.port = values.get("stt_port", stt_config.port)
+                if "stt_device" in values:
+                    stt_config.device = values["stt_device"]
 
             # TTS
             tts_config = self.agent_config.tts
@@ -960,9 +939,6 @@ class SettingsDialog(QDialog):
             # TTS voice model (stored as custom attr since WyomingConfig doesn't have it)
             if hasattr(self, 'voice_field') and self.agent_config:
                 self.agent_config._tts_voice = self.voice_field.text()
-            # Also persist the Piper voice combo selection at the top level for clarity
-            if hasattr(self, 'piper_voice_combo') and self.agent_config:
-                self.agent_config.tts_voice = self.piper_voice_combo.currentText()
 
             # Face — just update the face_config object (caller handles restart)
             if self.face_config:
