@@ -16,6 +16,7 @@ Animated by QTimer at 60fps. Activity level drives color (cyan idle → amber sp
 and animation speed.
 """
 
+from typing import Optional
 import math
 import random
 from PyQt6.QtWidgets import QWidget
@@ -88,8 +89,8 @@ class HUDOverlay(QWidget):
         # Contrast boost factor (1.0 = no change)
         self._contrast_factor: float = 1.0
 
-        # Assistant name (displayed top-left)
-        self._assistant_name = "Jarvis"
+        # Optional fixed hue from appearance settings (None = automatic)
+        self._palette_hue: Optional[int] = None
 
         # Timer: 60fps
         self._timer = QTimer(self)
@@ -119,9 +120,8 @@ class HUDOverlay(QWidget):
 
     def clear_palette_hue(self):
         """Clear custom palette hue and revert to automatic color selection."""
-        if hasattr(self, '_palette_hue'):
-            delattr(self, '_palette_hue')
-            self.update()
+        self._palette_hue = None
+        self.update()
 
     def set_contrast_factor(self, factor: float):
         """Set contrast factor for HUD saturation (1.0 = default)."""
@@ -236,7 +236,7 @@ class HUDOverlay(QWidget):
         act = self._activity
 
         # Color: profile hue overrides default cyan when active
-        if hasattr(self, '_palette_hue') and self._palette_hue is not None:
+        if self._palette_hue is not None:
             hue = self._palette_hue
             sat = 110
         elif self._profile_name:
@@ -535,14 +535,3 @@ class HUDOverlay(QWidget):
         self._profile_name = ""
         self._profile_hue = 182
         self._palette_hue = None  # Optional fixed hue from appearance settings
-
-    def set_palette_hue(self, hue: int):
-        """Set a fixed hue for the HUD palette (overrides automatic color)."""
-        self._palette_hue = hue
-        self.update()
-
-    def clear_palette_hue(self):
-        """Clear custom palette hue and revert to automatic color selection."""
-        if hasattr(self, '_palette_hue'):
-            delattr(self, '_palette_hue')
-        self.update()

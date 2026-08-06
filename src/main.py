@@ -12,6 +12,7 @@ Phases:
 
 import sys
 import os
+import time
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
@@ -22,9 +23,10 @@ from PyQt6.QtWidgets import (
     QLineEdit, QPushButton, QLabel, QFrame,
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPixmap, QPainter, QColor, QPen, QFont, QPalette
+from PyQt6.QtGui import QPixmap, QPainter, QColor, QPen, QFont, QPalette, QImage
 
 from jarvis.hud_overlay import HUDOverlay
+from jarvis.face_screen import FaceRecScreen
 from jarvis.state import JarvisState
 from jarvis.agent import JarvisAgent, AgentConfig, ChatConfig
 from jarvis.stt import WyomingConfig as STTWyomingConfig
@@ -35,6 +37,7 @@ from jarvis.settings import SettingsDialog
 
 from PyQt6.QtCore import QThread, pyqtSignal
 import cv2
+import numpy as np
 import logging
 
 logger = logging.getLogger(__name__)
@@ -73,6 +76,10 @@ class FaceRecThread(QThread):
     """Face detection thread — runs OpenCV LBPH recognition loop."""
 
     face_detected = pyqtSignal(str, float)  # name, confidence
+    frame_captured = pyqtSignal(QImage, list)  # frame (RGB), face rectangles
+    unknown_face_detected = pyqtSignal()  # face seen but not recognized
+    face_registered = pyqtSignal(str)  # name
+    samples_progress = pyqtSignal(int, int)  # collected, target
 
     def __init__(self, config: FaceConfig, parent=None):
         super().__init__(parent)
@@ -80,6 +87,26 @@ class FaceRecThread(QThread):
         self.recognizer = None
         self.stop_flag = False
         self.camera = None
+
+        # Face enrollment state
+        self._collecting = False
+        self._collecting_name = ""
+        self._collected_samples = 0
+        self._last_unknown_face_time: float = 0.0
+
+    def _numpy_to_qimage(self, frame: np.ndarray) -> QImage:
+        """Convert a BGR numpy frame to an RGB QImage."""
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        bytes_per_line = ch * w
+        qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        return qimg.copy()
+
+    def start_collection(self, name: str):
+        """Begin collecting face samples for a new person."""
+        self._collecting = True
+        self._collecting_name = name
+        self._collected_samples = 0
 
     def run(self):
         """Run face detection loop."""
@@ -104,24 +131,62 @@ class FaceRecThread(QThread):
             if not ret:
                 continue
 
-            name = self.recognizer.recognize(frame)
-            if name:
-                # Get confidence for overlay
-                faces = self.recognizer.detect_faces(frame)
-                conf = 0.0
-                if faces:
-                    x, y, w, h = faces[0]
-                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                    roi = gray[y:y + h, x:x + w]
-                    roi = cv2.resize(roi, self.config.resize_dims)
-                    if name in self.recognizer._models:
-                        model = self.recognizer._models[name]
-                        try:
-                            _, conf = model.predict(roi)
-                        except Exception:
-                            pass
+            # Detect faces (single pass — used for both display and recognition)
+            faces = self.recognizer.detect_faces(frame)
 
-                self.face_detected.emit(name, conf)
+            # Emit frame for display
+            qimg = self._numpy_to_qimage(frame)
+            self.frame_captured.emit(qimg, faces)
+
+            if self._collecting:
+                # ── Face enrollment mode ──────────────────────────────
+                if faces:
+                    added = self.recognizer.add_face(self._collecting_name, frame)
+                    if added:
+                        self._collected_samples += 1
+                        self.samples_progress.emit(
+                            self._collected_samples, self.config.min_faces_to_add
+                        )
+                    if self._collected_samples >= self.config.min_faces_to_add:
+                        # Train and store the new model
+                        self.recognizer.train_new_face(self._collecting_name)
+                        self._collecting = False
+                        self._collected_samples = 0
+                        self.face_registered.emit(self._collecting_name)
+            else:
+                # ── Normal recognition mode ──────────────────────────
+                if faces and self.recognizer._models:
+                    name = self.recognizer.recognize(frame)
+                    if name:
+                        # Extract confidence for the recognized face
+                        conf = 0.0
+                        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                        x, y, w, h = faces[0]
+                        roi = gray[y:y + h, x:x + w]
+                        roi = cv2.resize(roi, self.config.resize_dims)
+                        if name in self.recognizer._models:
+                            model = self.recognizer._models[name]
+                            try:
+                                _, conf = model.predict(roi)
+                            except Exception as e:
+                                logger.debug(
+                                    f"Confidence prediction failed for {name}: {e}"
+                                )
+                        # LBPH distance (lower = better); convert to percentage
+                        confidence_pct = max(0.0, 100.0 - conf)
+                        self.face_detected.emit(name, confidence_pct)
+                    else:
+                        # Face detected but not recognized — prompt for enrollment
+                        now = time.time()
+                        if now - self._last_unknown_face_time >= self.config.debounce_seconds:
+                            self._last_unknown_face_time = now
+                            self.unknown_face_detected.emit()
+                elif faces and not self.recognizer._models:
+                    # No models loaded at all — prompt for enrollment
+                    now = time.time()
+                    if now - self._last_unknown_face_time >= self.config.debounce_seconds:
+                        self._last_unknown_face_time = now
+                        self.unknown_face_detected.emit()
 
             self.msleep(100)  # 10fps detection loop
 
@@ -153,11 +218,16 @@ class JarvisApp(QWidget):
     def __init__(self):
         super().__init__()
 
-        # HUD overlay (background layer)
+        # HUD overlay (background layer — visible underneath face screen)
         self.hud = HUDOverlay()
         self.hud.resize(800, 600)
         self.hud.move(0, 0)
         self.hud.show()
+
+        # Face recognition screen (shown on startup, fades out when face is recognized)
+        self.face_screen = FaceRecScreen()
+        self.face_screen.resize(800, 600)
+        self.face_screen.move(0, 0)
 
         # Agent
         # Build agent config (env vars override defaults)
@@ -179,12 +249,32 @@ class JarvisApp(QWidget):
         face_config = FaceConfig(camera_index=0)
         self.face_thread = FaceRecThread(face_config)
         self.face_thread.face_detected.connect(self._on_face_detected)
+        self.face_thread.frame_captured.connect(self.face_screen.set_frame)
+        self.face_thread.unknown_face_detected.connect(self._on_unknown_face)
+        self.face_thread.face_registered.connect(self._on_face_registered)
+        self.face_thread.samples_progress.connect(self._on_samples_progress)
+
+        # Face recognition screen management
+        self._face_rec_active = True
+        self._enrollment_prompted = False  # Track if name dialog already shown
+        self._transition_timer = None
+        self.face_screen.show()
+
+        # Timeout: if no face recognized within 10 seconds, fall back to HUD
+        self._face_timeout = QTimer(self)
+        self._face_timeout.setSingleShot(True)
+        self._face_timeout.timeout.connect(self._on_face_timeout)
+        self._face_timeout.start(10000)
 
         # UI controls (foreground layer)
         self._setup_ui()
 
         # Signal: async status updates → status label
         self._status_updated.connect(self.status_label.setText)
+        # Signal: user entered a name on the face screen
+        self.face_screen.name_submitted.connect(self._on_name_submitted)
+        # Signal: user skipped face enrollment
+        self.face_screen.skip_requested.connect(self._on_face_screen_skip)
 
         # State change tracking
         self.agent.on_state_change(self._on_state_change)
@@ -221,16 +311,16 @@ class JarvisApp(QWidget):
         layout.addStretch()
 
         # Bottom control bar
-        bar = QFrame()
-        bar.setFixedHeight(60)
-        bar.setStyleSheet("""
+        self.bottom_bar = QFrame()
+        self.bottom_bar.setFixedHeight(60)
+        self.bottom_bar.setStyleSheet("""
             QFrame {
                 background: rgba(0, 0, 0, 180);
                 border-top: 1px solid rgba(0, 200, 255, 100);
             }
         """)
 
-        bar_layout = QHBoxLayout(bar)
+        bar_layout = QHBoxLayout(self.bottom_bar)
         bar_layout.setContentsMargins(15, 5, 15, 5)
 
         # Microphone button
@@ -314,7 +404,10 @@ class JarvisApp(QWidget):
         self.settings_btn.clicked.connect(self._open_settings)
         bar_layout.addWidget(self.settings_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
-        layout.addWidget(bar)
+        layout.addWidget(self.bottom_bar)
+
+        # Initially hide the bottom bar (shown after face recognition)
+        self.bottom_bar.hide()
 
     async def _init_services(self):
         """Initialize all services on startup."""
@@ -355,6 +448,81 @@ class JarvisApp(QWidget):
             self.hud.set_face_detected(name, confidence)
             logger.info(f"Face detected but no profile: {name}")
 
+        # If still in the face recognition splash phase, trigger transition
+        if self._face_rec_active:
+            self._face_rec_active = False
+            self._face_timeout.stop()
+            self.face_screen.set_face_detected(name, confidence)
+            self._start_transition_check()
+
+    def _on_face_timeout(self):
+        """Fallback: no face recognized within timeout — show HUD anyway."""
+        if not self._face_rec_active:
+            return
+        logger.info("Face recognition timeout — falling back to HUD")
+        self._face_rec_active = False
+        self.face_screen.set_status("No registered face found. Loading Jarvis...")
+        self.face_screen.start_fade()
+        self._start_transition_check()
+
+    def _on_face_screen_skip(self):
+        """User clicked Skip on the name input — transition to HUD."""
+        if self._face_rec_active:
+            self._face_rec_active = False
+            self._face_timeout.stop()
+        self._start_transition_check()
+
+    def _start_transition_check(self):
+        """Start a timer to poll the face screen for fade completion."""
+        if self._transition_timer is not None:
+            self._transition_timer.stop()
+        self._transition_timer = QTimer(self)
+        self._transition_timer.timeout.connect(self._check_transition)
+        self._transition_timer.start(50)
+
+    def _check_transition(self):
+        """Check if the face screen fade-out is complete."""
+        if self.face_screen.is_fade_complete:
+            if self._transition_timer is not None:
+                self._transition_timer.stop()
+                self._transition_timer = None
+            self.face_thread.stop()  # Stop camera + sampling loop
+            self.face_screen.hide()
+            self.bottom_bar.show()
+            logger.info("Face recognition complete, showing HUD")
+
+    # ── Face enrollment handlers ──────────────────────────────────────
+
+    def _on_unknown_face(self):
+        """An unknown face was detected — prompt for a name immediately."""
+        if not self._face_rec_active:
+            return  # Already past the splash screen
+        if self._enrollment_prompted:
+            return  # Name dialog already shown — don't reset it
+        logger.info("Unknown face detected — prompting for name")
+        self._face_timeout.stop()  # Give user unlimited time to enter a name
+        self._enrollment_prompted = True
+        self.face_screen.show_name_input()
+
+    def _on_name_submitted(self, name: str):
+        """User submitted a name for face enrollment."""
+        logger.info(f"Starting face enrollment for: {name}")
+        self.face_screen.show_sample_progress(0, self.face_thread.config.min_faces_to_add)
+        self.face_thread.start_collection(name)
+
+    def _on_samples_progress(self, collected: int, target: int):
+        """Update sample collection progress on the face screen."""
+        self.face_screen.show_sample_progress(collected, target)
+
+    def _on_face_registered(self, name: str):
+        """Face model trained and stored — new face is now recognizable."""
+        logger.info(f"Face registered for: {name}")
+        self._enrollment_prompted = False  # Reset for next enrollment
+        self.face_screen.clear_enrollment()
+        self.face_screen.set_status(f"Model trained for {name}! Recognizing...")
+        # The face thread will now recognize this face and emit face_detected,
+        # which triggers the normal transition to the HUD.
+
     def _open_settings(self):
         """Open the settings/preferences dialog."""
         dialog = SettingsDialog(agent_config=self.agent.config, agent=self.agent, parent=self)
@@ -378,6 +546,10 @@ class JarvisApp(QWidget):
         # Create and start new thread
         self.face_thread = FaceRecThread(new_config)
         self.face_thread.face_detected.connect(self._on_face_detected)
+        self.face_thread.frame_captured.connect(self.face_screen.set_frame)
+        self.face_thread.unknown_face_detected.connect(self._on_unknown_face)
+        self.face_thread.face_registered.connect(self._on_face_registered)
+        self.face_thread.samples_progress.connect(self._on_samples_progress)
         self.face_thread.start()
         logger.info("Face thread restarted")
 
@@ -432,6 +604,17 @@ class JarvisApp(QWidget):
         # Stop face detection thread
         if hasattr(self, 'face_thread'):
             self.face_thread.stop()
+
+        # Hide face screen
+        if hasattr(self, 'face_screen'):
+            self.face_screen.hide()
+
+        # Stop transition timer
+        if self._transition_timer is not None:
+            self._transition_timer.stop()
+
+        # Reset enrollment state
+        self._enrollment_prompted = False
 
         # Stop event loop thread
         if hasattr(self, 'event_loop_thread'):

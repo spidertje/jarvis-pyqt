@@ -70,7 +70,7 @@ class FaceRecognizer:
 
     def _get_db(self) -> pymysql.Connection:
         """Get or create MariaDB connection."""
-        if self._db is None or self._db.closed:
+        if self._db is None or self._db._closed:
             if self.config.db_host is None or self.config.db_user is None:
                 raise RuntimeError(
                     "DB host and user must be configured via env vars "
@@ -84,6 +84,20 @@ class FaceRecognizer:
                 database=self.config.db_name or "jarvis",
                 cursorclass=pymysql.cursors.DictCursor,
             )
+            # Ensure face_samples table exists (idempotent)
+            with self._db.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS face_samples (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        name VARCHAR(100) NOT NULL,
+                        sample LONGBLOB NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        INDEX idx_name (name)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+            self._db.commit()
         return self._db
 
     def _get_cascade(self) -> cv2.CascadeClassifier:
@@ -366,6 +380,58 @@ class FaceRecognizer:
             logger.error(f"Failed to retrain model for {name}: {e}")
             return False
 
+    def train_new_face(self, name: str) -> bool:
+        """
+        Train and store a new face model from collected samples.
+
+        Unlike retrain_face(), this creates a brand-new model entry (INSERT)
+        rather than updating an existing one. Requires face_samples table
+        to contain samples for the given name.
+        """
+        try:
+            db = self._get_db()
+            with db.cursor() as cur:
+                cur.execute("SELECT sample FROM face_samples WHERE name = %s ORDER BY id", (name,))
+                rows = cur.fetchall()
+
+            if not rows:
+                logger.warning(f"No samples found for {name}")
+                return False
+
+            samples = []
+            labels = []
+            for i, row in enumerate(rows):
+                roi = self._deserialize_roi(row["sample"])
+                if roi is not None:
+                    samples.append(roi)
+                    labels.append(i)
+
+            if not samples:
+                logger.warning(f"No valid samples for {name}")
+                return False
+
+            logger.info(f"Training new model for {name} with {len(samples)} samples")
+            new_model = cv2.face.LBPHFaceRecognizer_create()
+            new_model.train(samples, np.array(labels))
+
+            model_blob = self._save_model_blob(new_model)
+            with db.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO face_model (name, model) VALUES (%s, %s) "
+                    "ON DUPLICATE KEY UPDATE model = VALUES(model)",
+                    (name, model_blob),
+                )
+                db.commit()
+
+            # Reload all models so the new one takes effect
+            self.load_models()
+            logger.info(f"New model trained and stored for {name}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to train new model for {name}: {e}")
+            return False
+
     def _save_model_blob(self, model: cv2.face.LBPHFaceRecognizer) -> bytes:
         """Serialize an LBPH model to bytes for DB storage."""
         try:
@@ -423,5 +489,8 @@ class FaceRecognizer:
 
     def close(self):
         """Close database connection."""
-        if self._db and not self._db.closed:
-            self._db.close()
+        if self._db is not None:
+            try:
+                self._db.close()
+            except Exception as e:
+                logger.debug(f"DB close (already closed?): {e}")

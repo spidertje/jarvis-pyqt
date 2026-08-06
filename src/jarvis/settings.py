@@ -797,46 +797,6 @@ class SettingsDialog(QDialog):
         contrast_row.addWidget(self.contrast_value_label)
         layout.addLayout(contrast_row)
 
-        # Contrast boost slider
-        layout.addSpacing(12)
-        contrast_label = QLabel("Contrast Boost:")
-        contrast_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
-        layout.addWidget(contrast_label)
-
-        contrast_row = QHBoxLayout()
-        self.contrast_slider = QSlider(Qt.Orientation.Horizontal)
-        self.contrast_slider.setRange(80, 140)  # 80% to 140% of base saturation
-        self.contrast_slider.setValue(100)
-        self.contrast_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.contrast_slider.setTickInterval(10)
-        self.contrast_slider.setStyleSheet("""
-            QSlider::groove:horizontal {
-                background: rgba(0, 200, 255, 40);
-                height: 4px;
-                border-radius: 2px;
-            }
-            QSlider::handle:horizontal {
-                background: rgba(0, 200, 255, 180);
-                width: 14px;
-                height: 14px;
-                margin: -5px 0;
-                border-radius: 7px;
-            }
-            QSlider::sub-page:horizontal {
-                background: rgba(0, 200, 255, 100);
-                border-radius: 2px;
-            }
-        """)
-        # Read current contrast from config
-        current_contrast = getattr(self.agent_config, 'contrast_boost', 100) if self.agent_config else 100
-        self.contrast_slider.setValue(int(current_contrast))
-        self.contrast_value_label = QLabel(f"{int(current_contrast)}%")
-        self.contrast_value_label.setStyleSheet("color: rgba(200, 220, 240, 200); font-size: 12px; min-width: 35px;")
-        self.contrast_slider.valueChanged.connect(self._on_contrast_changed)
-        contrast_row.addWidget(self.contrast_slider, stretch=1)
-        contrast_row.addWidget(self.contrast_value_label)
-        layout.addLayout(contrast_row)
-
         layout.addStretch()
         return group
 
@@ -858,16 +818,6 @@ class SettingsDialog(QDialog):
             self.agent_config.contrast_boost = value
         # Apply live to HUD
         if self.agent is not None and hasattr(self.agent, "hud") and self.agent.hud:
-            self.agent.hud.set_contrast_factor(value / 100.0)
-
-    def _on_contrast_changed(self, value: int):
-        """Called when the contrast boost slider is moved."""
-        if hasattr(self, 'contrast_value_label'):
-            self.contrast_value_label.setText(f"{value}%")
-        if self.agent_config:
-            self.agent_config.contrast_boost = value
-        # Apply live to HUD
-        if self.agent is not None and hasattr(self.agent, 'hud') and self.agent.hud:
             self.agent.hud.set_contrast_factor(value / 100.0)
 
     def _save_settings(self):

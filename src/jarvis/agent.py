@@ -70,6 +70,8 @@ class JarvisAgent:
     Supports profile switching based on face recognition.
     """
 
+    _DEFAULT_LLM_URL = "http://192.168.55.179:8642/v1"
+
     def __init__(self, config: Optional[AgentConfig] = None, hud=None):
         self.config = config or AgentConfig()
         self.state = JarvisState.IDLE
@@ -87,7 +89,7 @@ class JarvisAgent:
             self.config.profile_db_password = os.environ.get("JARVIS_DB_PASSWORD")
         if self.config.profile_db_name is None:
             self.config.profile_db_name = os.environ.get("JARVIS_DB_NAME")
-        self.config.llm_base_url = self.config.llm_base_url or os.environ.get("JARVIS_LLM_URL") or os.environ.get("JARVIS_LLM_BASE_URL") or "http://192.168.55.179:8642/v1"
+        self.config.llm_base_url = self.config.llm_base_url or os.environ.get("JARVIS_LLM_URL") or os.environ.get("JARVIS_LLM_BASE_URL") or self._DEFAULT_LLM_URL
         self.config.llm_api_key = self.config.llm_api_key or os.environ.get("JARVIS_LLM_API_KEY")
         self.config.llm_model = self.config.llm_model or os.environ.get("JARVIS_LLM_MODEL")
 
@@ -210,35 +212,34 @@ class JarvisAgent:
         logger.info("Profile cleared, back to default")
 
     async def _run_voice(self):
-        """Run voice loop: listen → think → speak."""
-        while True:
-            # Listen
-            self._set_state(JarvisState.LISTENING)
-            text = await self.stt.listen()
-            if not text:
-                self._set_state(JarvisState.IDLE)
-                continue
-
-            # Think (send to LLM)
-            self._set_state(JarvisState.THINKING)
-            self._messages.append({"role": "user", "content": text})
-            reply = await self.chat.chat(self._messages, system_prompt=self._system_prompt)
-            if not reply:
-                self._set_state(JarvisState.IDLE)
-                continue
-            self._messages.append({"role": "assistant", "content": reply})
-
-            # Save history to active profile
-            if self._active_profile:
-                self._active_profile.chat_history = list(self._messages)
-                self.profiles.save(self._active_profile)
-
-            # Speak
-            self._set_state(JarvisState.SPEAKING)
-            audio = await self.tts.speak(reply)
-            if audio:
-                self.audio.play(audio)
+        """Run a single voice cycle: listen → think → speak."""
+        # Listen
+        self._set_state(JarvisState.LISTENING)
+        text = await self.stt.listen()
+        if not text:
             self._set_state(JarvisState.IDLE)
+            return
+
+        # Think (send to LLM)
+        self._set_state(JarvisState.THINKING)
+        self._messages.append({"role": "user", "content": text})
+        reply = await self.chat.chat(self._messages, system_prompt=self._system_prompt)
+        if not reply:
+            self._set_state(JarvisState.IDLE)
+            return
+        self._messages.append({"role": "assistant", "content": reply})
+
+        # Save history to active profile
+        if self._active_profile:
+            self._active_profile.chat_history = list(self._messages)
+            self.profiles.save(self._active_profile)
+
+        # Speak
+        self._set_state(JarvisState.SPEAKING)
+        audio = await self.tts.speak(reply)
+        if audio:
+            self.audio.play(audio)
+        self._set_state(JarvisState.IDLE)
 
     async def chat_text(self, user_text: str,
                         system_prompt: Optional[str] = None) -> str:

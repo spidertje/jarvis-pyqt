@@ -114,8 +114,9 @@ class WhisperSTT:
 
         try:
             while True:
-                # Record a chunk from microphone
-                chunk = sd.rec(
+                # Record a chunk from microphone (offload blocking call to thread)
+                chunk = await asyncio.to_thread(
+                    sd.rec,
                     chunk_size,
                     samplerate=self.config.sample_rate,
                     channels=self.config.channels,

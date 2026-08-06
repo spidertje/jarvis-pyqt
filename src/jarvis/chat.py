@@ -98,7 +98,8 @@ class ChatClient:
         url = f"{self.config.base_url}/chat/completions"
         async with session.post(url, json=payload) as resp:
             if resp.status != 200:
-                logger.error(f"Chat API returned {resp.status}")
+                body = await resp.text()
+                logger.error(f"Chat API returned {resp.status}: {body}")
                 return None
             data = await resp.json()
             return data["choices"][0]["message"]["content"]
@@ -123,7 +124,8 @@ class ChatClient:
         url = f"{self.config.base_url}/chat/completions"
         async with session.post(url, json=payload) as resp:
             if resp.status != 200:
-                logger.error(f"Stream API returned {resp.status}")
+                body = await resp.text()
+                logger.error(f"Stream API returned {resp.status}: {body}")
                 return None
             async for line in resp.content:
                 line = line.strip()
