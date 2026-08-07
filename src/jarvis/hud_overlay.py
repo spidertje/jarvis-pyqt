@@ -57,7 +57,9 @@ class HUDOverlay(QWidget):
 
         # State
         self._state = JarvisState.IDLE
-        self._activity = 0.0  # 0.0–1.0, smoothed
+        self._activity = 0.0  # 0.0–1.0, smoothed (drives animation speed/color)
+        self._voice_level = 0.0  # 0.0–1.0, raw mic amplitude (drives bar height)
+        self._voice_level_timer = 0  # counts down to fade voice level
         self._angle = 0.0
         self._pulse = 0.0
 
@@ -145,8 +147,14 @@ class HUDOverlay(QWidget):
                 })
 
     def set_activity(self, value: float):
-        """Override activity level directly (e.g. from voice amplitude)."""
+        """Override activity level directly (drives animation speed/color)."""
         self._activity = max(0.0, min(1.0, value))
+
+    def set_voice_level(self, level: float):
+        """Set raw microphone amplitude level (0–1). Drives voice bar height."""
+        self._voice_level = max(0.0, min(1.0, level))
+        self._voice_level_timer = 30  # Hold for ~0.5s at 60fps, then fade
+        self.update()
 
     @property
     def state(self) -> JarvisState:
@@ -163,6 +171,12 @@ class HUDOverlay(QWidget):
         lerp = 0.15 if self._activity < target else 0.08
         self._activity += (target - self._activity) * lerp
 
+        # Fade voice level
+        if self._voice_level_timer > 0:
+            self._voice_level_timer -= 1
+        else:
+            self._voice_level *= 0.93  # Slower decay when no new input
+
         # Update angle/pulse
         speed = 1.0 + self._activity * 3.0
         self._angle += 0.02 * speed
@@ -171,7 +185,7 @@ class HUDOverlay(QWidget):
         # Update particles
         self._update_particles(speed)
 
-        # Update voice bars
+        # Update voice bars (use max of activity and voice_level)
         self._update_bars(speed)
 
         # Update wave rings
@@ -199,9 +213,12 @@ class HUDOverlay(QWidget):
         for i in range(BAR_COUNT):
             target = 2.0
             if self._state == JarvisState.LISTENING:
-                target = 6.0 + random.random() * 4.0 * self._activity
+                # Voice level drives bar height — amplified with exponential curve
+                # so small voice changes are clearly visible
+                lvl = self._voice_level ** 0.6  # boost quiet speech
+                target = 6.0 + random.random() * 24.0 * lvl
             elif self._state == JarvisState.SPEAKING:
-                target = 10.0 + random.random() * 5.5 * self._activity
+                target = 10.0 + random.random() * 20.0 * self._activity
             self._bar_heights[i] += (target - self._bar_heights[i]) * BAR_SMOOTHING
 
     # ── Particle initialization ──────────────────────────────────────
@@ -238,17 +255,17 @@ class HUDOverlay(QWidget):
         # Color: profile hue overrides default cyan when active
         if self._palette_hue is not None:
             hue = self._palette_hue
-            sat = 110
+            sat = 170
         elif self._profile_name:
             hue = self._profile_hue
-            sat = 110
+            sat = 170
         elif act < 0.4:
             hue = 182  # cyan
         elif act > 0.7:
             hue = 45   # amber
         else:
             hue = 120  # green (transition)
-        sat = int((110 + int((1 - act) * 10)) * self._contrast_factor)
+        sat = int((170 + int((1 - act) * 30)) * self._contrast_factor)
         sat = min(255, max(0, sat))
 
         # 0. Assistant name (top-left)
@@ -297,7 +314,7 @@ class HUDOverlay(QWidget):
     def _draw_glow_rings(self, p, cx, cy, act, hue, sat):
         """Three concentric glow rings with subtle pulse."""
         pen = QPen(
-            self._color(hue, sat, 60, int(100 + act * 100)),
+            self._color(hue, sat, 70, int(100 + act * 100)),
             2 + act * 3,
         )
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -312,8 +329,8 @@ class HUDOverlay(QWidget):
         """Arc Reactor core — central glow + concentric rings."""
         # Central glow
         cg = QRadialGradient(cx, cy, 35)
-        cg.setColorAt(0, self._color(hue, sat, 80, int(200 + 55 * act)))
-        cg.setColorAt(0.5, self._color(hue, sat, 60, int(100 + 80 * act)))
+        cg.setColorAt(0, self._color(hue, sat, 90, int(200 + 55 * act)))
+        cg.setColorAt(0.5, self._color(hue, sat, 70, int(100 + 80 * act)))
         cg.setColorAt(1, QColor(0, 0, 0, 0))
         p.setBrush(cg)
         p.setPen(Qt.PenStyle.NoPen)
@@ -323,7 +340,7 @@ class HUDOverlay(QWidget):
         for r in [22, 14, 6]:
             a = 180 + int(75 * act)
             lw = 2.5 if r == 22 else (2.0 if r == 14 else 1.5)
-            pen = QPen(self._color(hue, sat, 80, a), lw)
+            pen = QPen(self._color(hue, sat, 90, a), lw)
             p.setPen(pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(QPointF(cx, cy), r, r)
@@ -331,7 +348,7 @@ class HUDOverlay(QWidget):
         # Speaking flash
         if self._state == JarvisState.SPEAKING:
             fa = int(100 + 155 * (0.5 + 0.5 * math.sin(self._pulse * 4)))
-            fp = QPen(self._color(hue, sat, 95, fa), 3)
+            fp = QPen(self._color(hue, sat, 98, fa), 3)
             p.setPen(fp)
             s = 1 + 0.08 * math.sin(self._pulse * 3)
             p.drawEllipse(QPointF(cx, cy), int(28 * s), int(28 * s))
@@ -343,7 +360,7 @@ class HUDOverlay(QWidget):
             a = self._angle + i * 0.5
             lw = 3.0 + act * 4.0 + i * 1.0
             pen = QPen(
-                self._color(hue, sat, 55 + i * 8, int(140 + act * 115)),
+                self._color(hue, sat, 65 + i * 8, int(140 + act * 115)),
                 lw,
             )
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -361,7 +378,7 @@ class HUDOverlay(QWidget):
 
             # Glow fill when active
             if act > 0.2:
-                fill = self._color(hue, sat, 55, int(35 + act * 50))
+                fill = self._color(hue, sat, 65, int(35 + act * 50))
                 p.setBrush(fill)
                 p.setPen(Qt.PenStyle.NoPen)
                 p.drawPie(
@@ -377,7 +394,7 @@ class HUDOverlay(QWidget):
             wr = 70 * scale
             wa = int(150 - w["phase"] * 90)
             pen = QPen(
-                self._color(hue, sat, 65, max(0, wa)),
+                self._color(hue, sat, 70, max(0, wa)),
                 2.5 - w["phase"] * 0.6,
             )
             p.setPen(pen)
@@ -398,7 +415,7 @@ class HUDOverlay(QWidget):
             ba = int(150 + 105 * act)
             bcol = self._color(
                 hue, sat,
-                60 + int(h / 60 * 30),
+                70 + int(h / 60 * 30),
                 ba,
             )
             p.setPen(Qt.PenStyle.NoPen)
@@ -412,14 +429,14 @@ class HUDOverlay(QWidget):
             pa = int(pt["op"] * 255 * (0.5 + act * 0.5))
             sz = pt["size"] * (1 + act * 0.5)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(self._color(hue, sat, 75, pa))
+            p.setBrush(self._color(hue, sat, 85, pa))
             p.drawEllipse(QPointF(pt["x"], pt["y"]), int(sz), int(sz))
 
     def _draw_connections(self, p, act, hue, sat):
         """Lines between nearby particles."""
         conn_a = int(15 + act * 30)
         dist = CONN_DISTANCE + act * (CONN_DISTANCE_ACTIVE - CONN_DISTANCE)
-        pen = QPen(self._color(hue, sat, 55, conn_a), 0.8)
+        pen = QPen(            self._color(hue, sat, 50, conn_a), 0.8)
         p.setPen(pen)
 
         for i, a_p in enumerate(self._particles):

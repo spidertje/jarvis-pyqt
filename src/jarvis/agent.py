@@ -110,6 +110,8 @@ class JarvisAgent:
         self.chat = ChatClient(chat_cfg)
         # STT
         stt_cfg = self.config.stt
+        stt_cfg.host = os.environ.get("JARVIS_STT_HOST") or stt_cfg.host
+        stt_cfg.port = int(os.environ.get("JARVIS_STT_PORT") or stt_cfg.port)
         if stt_cfg.device is not None and stt_cfg.device < 0:
             stt_cfg.device = None
         self.stt = WhisperSTT(stt_cfg)
@@ -197,26 +199,26 @@ class JarvisAgent:
         """Clear active profile (return to default)."""
         self.profiles.clear()
         self._active_profile = None
+        self._system_prompt = self.config.default_system_prompt or (
+            "You are Jarvis, a helpful AI assistant."
+        )
         self._messages = []
-        # Reset from DB default profile
-        db_name = self.profiles.get_default_assistant_name()
-        if db_name:
-            self.config.assistant_name = db_name
-            self.hud.set_assistant_name(db_name)
-        # Get default profile's system prompt
-        default_profile = self.profiles.get_default()
-        if default_profile:
-            self._system_prompt = default_profile.system_prompt
-        else:
-            self._system_prompt = self.config.default_system_prompt
-        logger.info("Profile cleared, back to default")
+
+    def _on_voice_level(self, level: float):
+        """Update HUD voice bars from microphone amplitude (called during STT listen)."""
+        if self.hud:
+            self.hud.set_voice_level(level)
 
     async def _run_voice(self):
         """Run a single voice cycle: listen → think → speak."""
         # Listen
         self._set_state(JarvisState.LISTENING)
-        text = await self.stt.listen()
+        logger.info("STT: Starting listen cycle")
+        text = await self.stt.listen(timeout=8.0, silence_threshold=100, on_voice_level=self._on_voice_level)
+        logger.info(f"STT: Listen returned: {text!r}")
         if not text:
+            if self.hud:
+                self.hud.set_voice_level(0.0)
             self._set_state(JarvisState.IDLE)
             return
 

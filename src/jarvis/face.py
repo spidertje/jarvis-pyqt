@@ -38,7 +38,7 @@ class FaceConfig:
     db_password: Optional[str] = None  # set via JARVIS_DB_PASSWORD env var
     db_name: Optional[str] = None
     cascade_path: Optional[str] = None  # None = use OpenCV default
-    confidence_threshold: float = 80.0  # LBPH distance threshold (lower = stricter)
+    confidence_threshold: float = 70.0  # LBPH distance threshold (lower = stricter)
     debounce_seconds: float = 2.0  # minimum time between same-name recognitions
     min_faces_to_add: int = 20  # min samples needed to train
     resize_dims: tuple = (100, 100)  # resize faces to these dims for LBPH
@@ -205,9 +205,9 @@ class FaceRecognizer:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = cascade.detectMultiScale(
             gray,
-            scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(30, 30),
+            scaleFactor=1.05,       # Smaller steps = more thorough detection
+            minNeighbors=6,        # Higher = fewer false positives
+            minSize=(40, 40),      # Minimum face size (pixels)
         )
         return [tuple(face) for face in faces]
 
@@ -351,11 +351,11 @@ class FaceRecognizer:
 
             samples = []
             labels = []
-            for i, row in enumerate(rows):
+            for row in rows:
                 roi = self._deserialize_roi(row["sample"])
                 if roi is not None:
                     samples.append(roi)
-                    labels.append(i)
+                    labels.append(0)  # All samples for same person share label 0
 
             if not samples:
                 logger.warning(f"No valid samples for {name}")
@@ -400,11 +400,11 @@ class FaceRecognizer:
 
             samples = []
             labels = []
-            for i, row in enumerate(rows):
+            for row in rows:
                 roi = self._deserialize_roi(row["sample"])
                 if roi is not None:
                     samples.append(roi)
-                    labels.append(i)
+                    labels.append(0)  # All samples for same person share label 0
 
             if not samples:
                 logger.warning(f"No valid samples for {name}")

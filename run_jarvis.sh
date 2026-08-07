@@ -13,6 +13,10 @@ export JARVIS_LLM_BASE_URL="http://192.168.55.179:8642/v1"
 # LLM API key (from Hermes gateway)
 export JARVIS_LLM_API_KEY="freellmapi-0d9e3106805c5ef86625a1a4256b96ca20e494f775ace34f"
 
+# STT endpoint (Wyoming faster-whisper on main server 192.168.55.41)
+export JARVIS_STT_HOST="192.168.55.41"
+export JARVIS_STT_PORT="10300"
+
 # Change to the directory where you cloned jarvis-pyqt (if not already there)
 cd "$(dirname "$0")"
 

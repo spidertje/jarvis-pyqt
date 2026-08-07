@@ -36,6 +36,7 @@ from jarvis.profile import ProfileManager, Profile
 from jarvis.settings import SettingsDialog
 
 from PyQt6.QtCore import QThread, pyqtSignal
+import threading
 import cv2
 import numpy as np
 import logging
@@ -50,11 +51,13 @@ class EventLoopThread(QThread):
         super().__init__()
         self._loop = None
         self._stop = False
+        self._loop_ready = threading.Event()
 
     def run(self):
         """Start asyncio event loop in this thread."""
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
+        self._loop_ready.set()  # Signal that the loop is ready
         logger.info("Async event loop started in background thread")
         try:
             self._loop.run_forever()
@@ -287,8 +290,11 @@ class JarvisApp(QWidget):
         self.face_thread.start()
 
         # Connect all services on startup (async via background loop)
+        self.event_loop_thread._loop_ready.wait(timeout=10.0)  # Wait for loop to start
         if self.event_loop_thread.loop:
-            self.event_loop_thread.loop.create_task(self._init_services())
+            loop = self.event_loop_thread.loop
+            asyncio.set_event_loop(loop)
+            loop.call_soon_threadsafe(loop.create_task, self._init_services())
         else:
             print("Warning: async event loop not available")
 
@@ -568,15 +574,25 @@ class JarvisApp(QWidget):
             self._running = True
             self.mic_btn.setText("⏹")
             self.hud.set_state(JarvisState.LISTENING)
+            logger.info("Voice mode started — beginning listen loop")
             if self.event_loop_thread.loop:
-                self._voice_task = self.event_loop_thread.loop.create_task(self._voice_loop())
+                loop = self.event_loop_thread.loop
+                loop.call_soon_threadsafe(
+                    loop.create_task, self._voice_loop()
+                )
             else:
                 print("Error: async event loop not available")
 
     async def _voice_loop(self):
         """Main voice loop."""
         while self._running:
-            await self.agent._run_voice()
+            try:
+                await self.agent._run_voice()
+            except Exception as e:
+                import traceback
+                logger.error(f"Voice loop error: {e}")
+                logger.error(traceback.format_exc())
+            await asyncio.sleep(0.1)  # Brief pause between cycles
 
     def _on_send_clicked(self):
         """Sync wrapper — dispatches async _send_chat on the background event loop."""

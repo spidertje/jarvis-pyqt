@@ -6,14 +6,14 @@ import os
 import json
 import socket
 from typing import Optional, Callable
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QSpinBox, QPushButton,
     QGroupBox, QMessageBox, QFrame, QTabWidget, QWidget,
-    QComboBox, QSlider
+    QComboBox, QSlider,
 )
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QFont, QColor
 
 from jarvis.face import FaceConfig
 
@@ -26,6 +26,15 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Jarvis — Settings")
         self.setMinimumSize(500, 450)
         self.setModal(True)
+        # Restore standard system window decorations (title bar, close, etc.)
+        # since parent JarvisApp is frameless
+        self.setWindowFlags(
+            Qt.WindowType.Dialog
+            | Qt.WindowType.WindowTitleHint
+            | Qt.WindowType.WindowSystemMenuHint
+            | Qt.WindowType.WindowCloseButtonHint
+            | Qt.WindowType.WindowStaysOnTopHint
+        )
         self.agent_config = agent_config
         self.agent = agent
         # Face tab callback — caller sets these before showing

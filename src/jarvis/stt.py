@@ -51,15 +51,30 @@ class WhisperSTT:
                 ),
                 timeout=timeout,
             )
-            self._connected = True
-            logger.info(f"Connected to faster-whisper STT at {self.config.host}:{self.config.port}")
-            return True
         except asyncio.TimeoutError:
             logger.error(f"Connection timeout to faster-whisper at {self.config.host}:{self.config.port}")
             return False
         except Exception as e:
             logger.error(f"Failed to connect to faster-whisper: {e}")
             return False
+
+        # Wyoming protocol: send hello and wait for server hello
+        self._send_event("hello", {"protocol_version": 0})
+        await self._writer.drain()
+
+        # Read server hello
+        try:
+            event = await asyncio.wait_for(self._read_event(), timeout=5.0)
+            if event and event.get("type") == "welcome":
+                logger.info(f"Wyoming server welcomed — features: {event.get('data', {}).get('features', [])}")
+            elif event:
+                logger.info(f"Wyoming server response: {event.get('type')}")
+        except (asyncio.TimeoutError, asyncio.IncompleteReadError):
+            logger.warning("No Wyoming hello response from server — continuing anyway")
+
+        self._connected = True
+        logger.info(f"Connected to faster-whisper STT at {self.config.host}:{self.config.port}")
+        return True
 
     async def disconnect(self):
         """Disconnect from faster-whisper."""
@@ -79,7 +94,8 @@ class WhisperSTT:
         rms = np.sqrt(np.mean(samples.astype(np.float64) ** 2))
         return rms < threshold
 
-    async def listen(self, timeout: float = 5.0, silence_threshold: float = 500) -> Optional[str]:
+    async def listen(self, timeout: float = 5.0, silence_threshold: float = 500,
+                     on_voice_level: Optional[callable] = None) -> Optional[str]:
         """
         Record audio from microphone and transcribe it.
 
@@ -88,11 +104,13 @@ class WhisperSTT:
         Args:
             timeout: Max recording time in seconds
             silence_threshold: RMS amplitude threshold for silence detection
+            on_voice_level: Optional callback(float) called with normalized amplitude (0–1) per chunk
 
         Returns:
             Transcribed text or None on failure.
         """
         if not self._connected:
+            logger.info("STT: Connecting...")
             if not await self.connect():
                 return None
 
@@ -102,6 +120,10 @@ class WhisperSTT:
             logger.warning("sounddevice not available for recording")
             return None
 
+        # Auto-detect best input device if not explicitly configured
+        if self.config.device is None:
+            self.config.device = self._find_input_device(sd)
+
         # Record chunks, accumulating until silence or timeout
         chunk_duration = 0.5  # seconds
         chunk_size = int(self.config.sample_rate * chunk_duration)
@@ -110,25 +132,33 @@ class WhisperSTT:
         max_silence_chunks = int(timeout / chunk_duration)
         speech_detected = False
 
-        logger.info("Listening...")
+        logger.info(f"STT: Listening... (device={self.config.device}, sample_rate={self.config.sample_rate})")
 
         try:
             while True:
                 # Record a chunk from microphone (offload blocking call to thread)
-                chunk = await asyncio.to_thread(
-                    sd.rec,
-                    chunk_size,
+                rec_kwargs = dict(
                     samplerate=self.config.sample_rate,
                     channels=self.config.channels,
                     dtype="int16",
                     blocking=True,
                 )
+                if self.config.device is not None:
+                    rec_kwargs["device"] = self.config.device
+                chunk = await asyncio.to_thread(sd.rec, chunk_size, **rec_kwargs)
                 if chunk is None:
                     break
 
                 # Convert numpy array to bytes
                 chunk_bytes = chunk.tobytes()
                 accumulated += chunk_bytes
+
+                # Report voice level to callback (normalized 0–1)
+                if on_voice_level is not None:
+                    samples = np.frombuffer(chunk_bytes, dtype=np.int16)
+                    rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+                    level = min(1.0, rms / 30.0)  # Webcam mic: 30+ RMS = full scale
+                    on_voice_level(level)
 
                 # Check for silence
                 if self._is_silence(chunk_bytes, silence_threshold):
@@ -166,27 +196,84 @@ class WhisperSTT:
         except ImportError:
             return None
 
-    def _send_event(self, event_type: str, data: dict = None):
-        """Send a Wyoming protocol event."""
-        event = {"type": event_type}
+    def _find_input_device(self, sd) -> Optional[int]:
+        """Find the best input device by testing each one for audio levels."""
+        try:
+            devices = sd.query_devices()
+        except Exception:
+            return None
+
+        best_device = None
+        best_rms = 0.0
+        for i, dev in enumerate(devices):
+            if dev["max_input_channels"] < 1:
+                continue
+            try:
+                test_rec = sd.rec(
+                    int(self.config.sample_rate * 0.3),
+                    samplerate=self.config.sample_rate,
+                    channels=1,
+                    device=i,
+                    dtype="int16",
+                    blocking=True,
+                )
+                samples = np.frombuffer(test_rec.tobytes(), dtype=np.int16)
+                rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+                if rms > best_rms:
+                    best_rms = rms
+                    best_device = i
+            except Exception:
+                continue
+
+        if best_device is not None:
+            logger.info(f"Auto-selected input device {best_device} (RMS={best_rms:.2f})")
+        return best_device
+
+    def _send_event(self, event_type: str, data: dict = None, payload: bytes = None):
+        """Send a Wyoming protocol event (JSON header + optional data/payload)."""
+        event = {"type": event_type, "version": "1.10.0"}
+        data_bytes = b""
         if data:
-            event["data"] = data
-        self._writer.write(json.dumps(event).encode() + b"\n")
+            data_bytes = json.dumps(data, ensure_ascii=False).encode("utf-8")
+            event["data_length"] = len(data_bytes)
+        else:
+            event.pop("data", None)
+
+        if payload:
+            event["payload_length"] = len(payload)
+
+        header = json.dumps(event, ensure_ascii=False).encode("utf-8")
+        self._writer.write(header + b"\n")
+        if data_bytes:
+            self._writer.write(data_bytes)
+        if payload:
+            self._writer.write(payload)
 
     async def _read_event(self) -> dict:
-        """Read a Wyoming protocol event (JSON line)."""
+        """Read a Wyoming protocol event (JSON header + optional data/payload)."""
         line = await self._reader.readline()
         if not line:
             return {}
-        return json.loads(line.decode("utf-8"))
+        event = json.loads(line.decode("utf-8"))
+
+        data_length = event.pop("data_length", 0)
+        if data_length > 0:
+            data = await self._reader.readexactly(data_length)
+            event["data"] = json.loads(data.decode("utf-8"))
+
+        payload_length = event.pop("payload_length", 0)
+        if payload_length > 0:
+            event["payload"] = await self._reader.readexactly(payload_length)
+
+        return event
 
     async def transcribe(self, audio_data: bytes) -> Optional[str]:
         """
         Transcribe audio via Wyoming protocol.
-        
+
         Args:
             audio_data: Raw PCM audio bytes (16-bit, 16kHz, mono)
-            
+
         Returns:
             Transcribed text or None on failure.
         """
@@ -195,45 +282,62 @@ class WhisperSTT:
                 return None
 
         try:
-            # Send transcribe request
-            self._send_event("transcribe", {})
-            await self._writer.drain()
-
-            # Send audio in chunks
-            chunk_size = 3200  # ~100ms at 16kHz 16-bit mono
-            for i in range(0, len(audio_data), chunk_size):
-                chunk = audio_data[i:i + chunk_size]
-                event = {
-                    "type": "audio-chunk",
-                    "data": {
-                        "rate": self.config.sample_rate,
-                        "width": self.config.width,
-                        "channels": self.config.channels,
-                    },
-                }
-                self._writer.write(json.dumps(event).encode() + b"\n")
-                self._writer.write(chunk)
-                await self._writer.drain()
-
-            # Read transcript
-            text = None
-            while True:
-                event = await self._read_event()
-                if not event:
-                    break
-
-                if event.get("type") == "transcript":
-                    data = event.get("data", {})
-                    text = data.get("text", "")
-                    break
-
-                if event.get("type") == "transcript-stop":
-                    break
-
-            return text
+            return await self._do_transcribe(audio_data)
 
         except Exception as e:
             logger.error(f"Whisper STT error: {e}")
             self._connected = False
+            # Try reconnecting and retrying once
+            logger.info("Attempting STT reconnection...")
+            if await self.connect():
+                try:
+                    return await self._do_transcribe(audio_data)
+                except Exception as e2:
+                    logger.error(f"STT retry also failed: {e2}")
             return None
+
+    async def _do_transcribe(self, audio_data: bytes) -> Optional[str]:
+        """Send audio data and read back the transcript."""
+        # Send transcribe request with audio format metadata
+        self._send_event("transcribe", {
+            "rate": self.config.sample_rate,
+            "width": self.config.width,
+            "channels": self.config.channels,
+        })
+        await self._writer.drain()
+
+        # Send audio chunks with format metadata in data + raw audio as payload
+        chunk_size = 3200  # ~100ms at 16kHz 16-bit mono
+        timestamp = 0
+        for i in range(0, len(audio_data), chunk_size):
+            chunk = audio_data[i:i + chunk_size]
+            self._send_event("audio-chunk", {
+                "rate": self.config.sample_rate,
+                "width": self.config.width,
+                "channels": self.config.channels,
+                "timestamp": timestamp,
+            }, payload=chunk)
+            timestamp += len(chunk) // (self.config.width * self.config.channels)
+            await self._writer.drain()
+
+        # Send audio-stop to signal end of stream
+        self._send_event("audio-stop", {"timestamp": timestamp})
+        await self._writer.drain()
+
+        # Read transcript
+        text = None
+        while True:
+            event = await self._read_event()
+            if not event:
+                break
+
+            if event.get("type") == "transcript":
+                data = event.get("data", {})
+                text = data.get("text", "")
+                break
+
+            if event.get("type") == "transcript-stop":
+                break
+
+        return text
 
