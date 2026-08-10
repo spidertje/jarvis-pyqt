@@ -28,6 +28,7 @@ class Profile:
     chat_history: list[dict[str, str]] = field(default_factory=list)
     accent_hue: int = 182  # Default cyan
     enabled: bool = True
+    face_name: str | None = None  # Links face identity to profile
 
     def to_db_row(self) -> tuple:
         """Convert to DB INSERT/UPDATE row."""
@@ -35,7 +36,7 @@ class Profile:
 
         # Map to web frontend schema:
         # name, assistant_name, system_prompt->assistant_full,
-        # chat_history, accent_hue, enabled
+        # chat_history, accent_hue, enabled, face_name
         return (
             self.name,
             self.assistant_name,
@@ -43,6 +44,7 @@ class Profile:
             json.dumps(self.chat_history),
             self.accent_hue,
             int(self.enabled),
+            self.face_name,
         )
 
     @classmethod
@@ -51,7 +53,8 @@ class Profile:
         import json
 
         # Map actual DB columns (from web frontend schema) to Profile fields
-        history = json.loads(row.get("chat_history", "[]"))
+        raw_history = row.get("chat_history")
+        history = json.loads(raw_history) if raw_history else []
         # enabled: if column exists use it, else default to True
         enabled_val = row.get("enabled")
         if enabled_val is None:
@@ -78,6 +81,24 @@ class Profile:
             chat_history=history,
             accent_hue=row.get("accent_hue") or cls._palette_to_hue(row.get("palette", "cyan")),
             enabled=bool(enabled_val),
+            face_name=row.get("face_name"),
+        )
+
+    @classmethod
+    def create_from_default(cls, default_profile: "Profile", face_name: str) -> "Profile":
+        """Create a new profile for a recognized face, copying defaults from default profile.
+
+        The new profile uses the face_name as its profile name (per user preference:
+        'name the profile the same as the face').
+        """
+        return cls(
+            name=face_name,
+            assistant_name=default_profile.assistant_name,
+            system_prompt=default_profile.system_prompt,
+            chat_history=[],
+            accent_hue=default_profile.accent_hue,
+            enabled=True,
+            face_name=face_name,
         )
 
     @staticmethod
@@ -163,6 +184,13 @@ class ProfileManager:
         """Get a profile by name (case-insensitive)."""
         return self._profiles.get(name.lower())
 
+    def get_by_face_name(self, face_name: str) -> Profile | None:
+        """Get a profile by face_name (case-insensitive)."""
+        for profile in self._profiles.values():
+            if profile.face_name and profile.face_name.lower() == face_name.lower():
+                return profile
+        return None
+
     def get_active(self) -> Profile | None:
         """Get the currently active profile."""
         if self._active_name:
@@ -197,13 +225,15 @@ class ProfileManager:
         logger.info("Active profile cleared")
 
     def save(self, profile: Profile) -> bool:
-        """Save a profile to DB (upsert)."""
+        """Save a profile to DB (upsert).
+
+        ponytail: writes only columns present in the live web-frontend schema
+        (accent_hue/enabled/system_prompt aren't columns there; they map to
+        palette/assistant_full). chat_history guarded separately since older
+        tables lack it.
+        """
         try:
             db = self._get_db()
-            # Use web frontend schema:
-            # name, assistant_name, assistant_full (system_prompt),
-            # chat_history, accent_hue, enabled
-            # Also need to handle palette (from accent_hue)
             import json
 
             palette = Profile._hue_to_palette(profile.accent_hue)
@@ -212,24 +242,23 @@ class ProfileManager:
                     (
                         "INSERT INTO profiles "
                         "(name, assistant_name, assistant_full, "
-                        "chat_history, accent_hue, enabled, palette) "
+                        "palette, chat_history, face_name, api_key) "
                         "VALUES (%s, %s, %s, %s, %s, %s, %s) "
                         "ON DUPLICATE KEY UPDATE "
                         "assistant_name=VALUES(assistant_name), "
                         "assistant_full=VALUES(assistant_full), "
+                        "palette=VALUES(palette), "
                         "chat_history=VALUES(chat_history), "
-                        "accent_hue=VALUES(accent_hue), "
-                        "enabled=VALUES(enabled), "
-                        "palette=VALUES(palette)"
+                        "face_name=VALUES(face_name)"
                     ),
                     (
                         profile.name,
                         profile.assistant_name,
                         profile.system_prompt,
-                        json.dumps(profile.chat_history),
-                        profile.accent_hue,
-                        int(profile.enabled),
                         palette,
+                        json.dumps(profile.chat_history),
+                        profile.face_name,
+                        "",  # api_key NOT-NULL — not used by PyQt profiles
                     ),
                 )
             db.commit()

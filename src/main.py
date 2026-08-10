@@ -40,6 +40,7 @@ from jarvis.config import AppConfig
 from jarvis.face import FaceConfig
 from jarvis.face_screen import FaceRecScreen
 from jarvis.hud_overlay import HUDOverlay
+from jarvis.profile import Profile
 from jarvis.settings import SettingsDialog
 from jarvis.state import JarvisState
 
@@ -489,20 +490,34 @@ class JarvisApp(QWidget):
 
     def _on_face_detected(self, name: str, confidence: float):
         """Handle face detection — switch to that profile, update HUD."""
-        # Switch profile if we have one for this person
-        profile = self.agent.profiles.get(name)
+        # Look up profile by face_name first (explicit link), then by profile name.
+        profile = self.agent.profiles.get_by_face_name(name) or self.agent.profiles.get(name)
         if profile:
-            if self.agent.switch_profile(name):
+            if self.agent.switch_profile(profile.name):
                 # Update HUD with profile name + accent color
                 self.hud.set_profile(profile.name, profile.accent_hue)
                 logger.info(f"Profile switched to: {profile.name}")
             else:
-                self.hud.set_face_detected(name, confidence)
-                logger.warning(f"Could not switch to profile: {name}")
+                self.hud.set_face_detected(profile.name, confidence)
+                logger.warning(f"Could not switch to profile: {profile.name}")
         else:
-            # No profile for this person — just show face overlay
-            self.hud.set_face_detected(name, confidence)
-            logger.info(f"Face detected but no profile: {name}")
+            # No profile linked to this face — auto-create one from the default
+            # profile. Profile name = face name (per user preference).
+            created = self._ensure_profile_for_face(name)
+            if created:
+                profile = self.agent.profiles.get(name)
+                if profile and self.agent.switch_profile(name):
+                    self.hud.set_profile(profile.name, profile.accent_hue)
+                    logger.info(
+                        f"Auto-created + switched to profile for face: {name}"
+                    )
+                    if self.hud:
+                        self.hud.set_face_detected(name, confidence)
+                else:
+                    self.hud.set_face_detected(name, confidence)
+            else:
+                self.hud.set_face_detected(name, confidence)
+                logger.warning(f"No profile for face: {name} and auto-create failed")
 
         # If still in the face recognition splash phase, trigger transition
         if self._face_rec_active:
@@ -512,6 +527,26 @@ class JarvisApp(QWidget):
                 self._enrollment_delay_timer.stop()
             self.face_screen.set_face_detected(name, confidence)
             self._start_transition_check()
+
+    def _ensure_profile_for_face(self, face_name: str) -> bool:
+        """Create a profile for a recognized face from defaults, if none exists.
+
+        Returns True if a profile exists-or-was-created for this face.
+        """
+        default_profile = self.agent.profiles.get_default()
+        if default_profile is None:
+            logger.warning("Cannot auto-create profile: no default profile found")
+            return False
+        try:
+            new_profile = Profile.create_from_default(default_profile, face_name)
+            if self.agent.profiles.save(new_profile):
+                self.agent.profiles.load_all()
+                logger.info(f"Auto-created profile '{new_profile.name}' from defaults")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Failed to auto-create profile for {face_name}: {e}")
+            return False
 
     def _on_face_timeout(self):
         """Fallback: no face recognized within timeout — show HUD anyway."""

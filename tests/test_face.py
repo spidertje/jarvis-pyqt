@@ -146,6 +146,9 @@ class TestRecognize:
         model.predict.return_value = (0, 50.0)  # label, confidence
         rec._models = {"alice": model}
         rec.config.confidence_threshold = 70.0
+        # Temporal voting needs a whole window of matches before it emits.
+        # Seed the vote buffer already-satisfied so a single call returns immediately.
+        rec._vote_buffers["alice"] = [True] * rec.config.vote_window
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
         result = rec.recognize(frame)
         assert result is not None

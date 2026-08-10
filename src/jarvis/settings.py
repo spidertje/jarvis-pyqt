@@ -2,9 +2,12 @@
 Jarvis Settings - Preferences dialog for API endpoints and DB config.
 """
 
+import logging
 from collections.abc import Callable
 
 from PyQt6.QtCore import Qt
+
+logger = logging.getLogger(__name__)
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -99,6 +102,7 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._build_audio_tab(), "🔈 Audio")
         self.tabs.addTab(self._build_db_tab(), "🗄 Database")
         self.tabs.addTab(self._build_face_tab(), "👁 Face")
+        self.tabs.addTab(self._build_profiles_tab(), "👤 Profiles")
         self.tabs.addTab(self._build_appearance_tab(), "🎨 Appearance")
 
         layout.addWidget(self.tabs)
@@ -759,6 +763,78 @@ class SettingsDialog(QDialog):
         finally:
             self.test_btn.setEnabled(True)
 
+    def _build_profiles_tab(self):
+        """Profiles tab — view/edit face↔profile links and switch active profile."""
+        group = self._make_group("Profiles & Face Links", "👤")
+        layout = QVBoxLayout(group)
+
+        # Profile selector
+        lbl = QLabel("Active Profile: (also switched automatically by face recognition)")
+        lbl.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        layout.addWidget(lbl)
+
+        self.profile_combo = QComboBox()
+        self.profile_combo.setFixedHeight(30)
+        self.profile_combo.setStyleSheet("""
+            QComboBox {
+                background: rgba(0, 0, 0, 60);
+                border: 1px solid rgba(0, 200, 255, 80);
+                border-radius: 4px;
+                padding: 6px 10px;
+                color: #e0e0e0;
+                font-size: 13px;
+            }
+            QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right; width: 20px; }
+            QComboBox QAbstractItemView {
+                background: rgba(0, 0, 0, 80);
+                selection-background-color: rgba(0, 200, 255, 150);
+            }
+        """)
+        # Populate from agent's profile manager
+        self._profile_names = []
+        if self.agent and hasattr(self.agent, "profiles"):
+            self._profile_names = self.agent.profiles.list_names()
+            for name in self._profile_names:
+                self.profile_combo.addItem(name)
+        layout.addWidget(self.profile_combo)
+
+        # Link label + edit (face_name column)
+        layout.addSpacing(8)
+        link_lbl = QLabel("Linked Face (face_name):")
+        link_lbl.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        layout.addWidget(link_lbl)
+
+        self.profile_face_link = QLineEdit()
+        self.profile_face_link.setPlaceholderText("Face model name that activates this profile")
+        self.profile_face_link.setStyleSheet("""
+            QLineEdit {
+                background: rgba(0, 0, 0, 60);
+                border: 1px solid rgba(0, 200, 255, 80);
+                border-radius: 4px;
+                padding: 6px 10px;
+                color: #e0e0e0;
+                font-size: 13px;
+            }
+        """)
+        # Load face_name for the currently selected profile
+        self.profile_combo.currentIndexChanged.connect(self._on_profile_selected)
+        layout.addWidget(self.profile_face_link)
+
+        layout.addStretch()
+        # Load face names initially after construction
+        if self._profile_names:
+            self._on_profile_selected(0)
+        return group
+
+    def _on_profile_selected(self, index: int):
+        """Populate face-name link field when a profile is selected."""
+        if not (self.agent and hasattr(self.agent, "profiles") and self.profile_combo.count()):
+            return
+        name = self.profile_combo.currentText()
+        profile = self.agent.profiles.get(name)
+        if profile:
+            self.profile_face_link.setText(profile.face_name or "")
+
     def _build_appearance_tab(self):
         """Appearance configuration tab for color schemes."""
         config = self.agent_config
@@ -1000,6 +1076,19 @@ class SettingsDialog(QDialog):
                 self.agent_config.palette_index = self.palette_combo.currentIndex()
             if hasattr(self, "contrast_slider"):
                 self.agent_config.contrast_boost = self.contrast_slider.value()
+
+            # Profile face-link: write back the edited face_name for the selected profile
+            if self.agent and hasattr(self, "profile_combo") and self.profile_combo.count():
+                name = self.profile_combo.currentText()
+                profile = self.agent.profiles.get(name)
+                if profile:
+                    new_face = self.profile_face_link.text().strip() or None
+                    if new_face != profile.face_name:
+                        profile.face_name = new_face
+                        self.agent.profiles.save(profile)
+                        logger.info(
+                            f"Updated face_name for {profile.name} -> {new_face}"
+                        )
 
         # Sync changes back to AppConfig for persistence
         if self.app_config and self.agent_config:

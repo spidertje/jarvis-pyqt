@@ -128,8 +128,8 @@ class TestSettingsDialogSave:
 
 class TestSettingsDialogTabs:
     def test_all_tabs_present(self, settings):
-        # LLM, STT, TTS, Audio, Database, Face, Appearance = 7 tabs
-        assert settings.tabs.count() == 7
+        # LLM, STT, TTS, Audio, Database, Face, Profiles, Appearance = 8 tabs
+        assert settings.tabs.count() == 8
 
     def test_palette_combo_populated(self, settings):
         assert settings.palette_combo.count() == 10

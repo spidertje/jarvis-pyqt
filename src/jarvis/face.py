@@ -44,6 +44,16 @@ class FaceConfig:
     debounce_seconds: float = 2.0  # minimum time between same-name recognitions
     min_faces_to_add: int = 20  # min samples needed to train
     resize_dims: tuple = (100, 100)  # resize faces to these dims for LBPH
+    # Sample quality gating (root cause of inconsistent recognition: blurry/AWB-bad
+    # samples get trained in). Reject samples below these thresholds.
+    sample_min_focus: float = 60.0  # min Laplacian variance of the grayscale ROI
+    sample_min_brightness: float = 30.0  # min mean pixel value (too dark = reject)
+    sample_max_brightness: float = 235.0  # max mean pixel value (blown out = reject)
+    # Temporal voting: hold a sliding window of predictions per identity and only
+    # emit a recognition once the majority of the window agrees. Kills flicker on
+    # a 10fps loop where single frames mispredict.
+    vote_window: int = 5  # frames of history per identity
+    vote_majority: float = 0.6  # fraction of window that must agree
 
 
 class FaceRecognizer:
@@ -67,6 +77,7 @@ class FaceRecognizer:
             self.config.db_name = os.environ.get("JARVIS_DB_NAME")
         self._models: dict[str, cv2.face.LBPHFaceRecognizer] = {}
         self._last_recognition: dict[str, float] = {}  # name -> last recognition time
+        self._vote_buffers: dict[str, list[bool]] = {}  # name -> recent hit/miss window
         self._db = None
         self._cascade = None
         self._net = None
@@ -296,14 +307,61 @@ class FaceRecognizer:
 
         faces = self.detect_faces(frame)
         if not faces:
+            # No faces present this frame — drift the vote buffers down so a
+            # committed recognition decays rather than sticking.
+            for buf in self._vote_buffers.values():
+                if buf:
+                    buf.pop(0)
+            if len(self._vote_buffers) > 1:
+                self._vote_buffers = {
+                    k: v for k, v in self._vote_buffers.items() if v
+                }
             return None
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        pred = self._predict_frame(gray, faces)
+
+        # ── Temporal voting ──────────────────────────────────────────
+        # Push this frame's per-identity match into each buffer; a name is
+        # only emitted when its sliding window crosses the majority threshold.
+        if pred is None:
+            for buf in self._vote_buffers.values():
+                if buf:
+                    buf.pop(0)
+            return None
+
+        name, conf = pred
+        buf = self._vote_buffers.setdefault(name, [])
+        buf.append(True)
+        if len(buf) > self.config.vote_window:
+            buf.pop(0)
+        # Also decay non-selected buffers so alternating flicker can't sustain a wrong hit.
+        for other, obuf in self._vote_buffers.items():
+            if other != name and obuf:
+                obuf.pop(0)
+
+        if sum(buf) / float(self.config.vote_window) < self.config.vote_majority:
+            return None
+
+        # ── Confidence threshold + debounce ─────────────────────────
+        if conf < self.config.confidence_threshold:
+            now = time.time()
+            last = self._last_recognition.get(name, 0)
+            if now - last >= self.config.debounce_seconds:
+                self._last_recognition[name] = now
+                return (name, conf)
+
+        return None
+
+    def _predict_frame(self, gray: np.ndarray, faces: list[tuple]) -> tuple | None:
+        """Predict the best (name, confidence) across all detected faces."""
         best_name = None
         best_conf = float("inf")
 
         for x, y, w, h in faces:
             roi = gray[y : y + h, x : x + w]
+            if roi.size == 0:
+                continue
             roi = cv2.resize(roi, self.config.resize_dims)
 
             for name, model in self._models.items():
@@ -314,16 +372,9 @@ class FaceRecognizer:
                         best_name = name
                 except Exception:
                     continue
-
-        # Check confidence threshold and debounce
-        if best_name and best_conf < self.config.confidence_threshold:
-            now = time.time()
-            last = self._last_recognition.get(best_name, 0)
-            if now - last >= self.config.debounce_seconds:
-                self._last_recognition[best_name] = now
-                return (best_name, best_conf)
-
-        return None
+        if best_name is None:
+            return None
+        return (best_name, best_conf)
 
     def add_face(self, name: str, frame: np.ndarray) -> bool:
         """
@@ -342,6 +393,21 @@ class FaceRecognizer:
         x, y, w, h = faces[0]
 
         roi = gray[y : y + h, x : x + w]
+        # Quality gate — reject blurry / too dark / blown-out samples so they
+        # don't poison the LBPH model. This is the root cause of inconsistent
+        # recognition. Skip silently (enrollment keeps going until enough good
+        # samples accumulate).
+        focus = self._laplacian_variance(roi)
+        mean = float(roi.mean()) if roi.size else 0.0
+        if focus < self.config.sample_min_focus:
+            logger.debug(f"Rejecting sample for {name}: blurry (focus={focus:.1f})")
+            return False
+        if mean < self.config.sample_min_brightness or mean > self.config.sample_max_brightness:
+            logger.debug(
+                f"Rejecting sample for {name}: bad exposure (mean={mean:.1f})"
+            )
+            return False
+
         roi = cv2.resize(roi, self.config.resize_dims)
 
         # Serialize ROI for DB storage
@@ -381,6 +447,12 @@ class FaceRecognizer:
             logger.error(f"Failed to serialize ROI: {e}")
             return b""
 
+    def _laplacian_variance(self, roi: np.ndarray) -> float:
+        """Compute Laplacian variance as a focus/sharpness metric (higher = sharper)."""
+        if roi.size == 0:
+            return 0.0
+        return float(cv2.Laplacian(roi, cv2.CV_64F).var())
+
     def _deserialize_roi(self, blob: bytes) -> np.ndarray | None:
         """Deserialize a face ROI from DB bytes."""
         try:
@@ -406,8 +478,10 @@ class FaceRecognizer:
 
         Requires face_samples table to exist with (name, sample) columns.
         """
-        if name not in self._models:
-            logger.error(f"No existing model for {name}")
+        # Need at least one sample to retrain
+        count = self._get_sample_count(name)
+        if count < self.config.min_faces_to_add:
+            logger.warning(f"Not enough samples for {name}: {count}/{self.config.min_faces_to_add}")
             return False
 
         try:
@@ -450,6 +524,20 @@ class FaceRecognizer:
         except Exception as e:
             logger.error(f"Failed to retrain model for {name}: {e}")
             return False
+
+    def maybe_retrain(self, name: str) -> bool:
+        """Retrain if enough new samples have accumulated since last training.
+        
+        Returns True if retrained, False otherwise.
+        """
+        count = self._get_sample_count(name)
+        if count < self.config.min_faces_to_add:
+            return False
+        # Simple heuristic: retrain every N samples (e.g., every 10)
+        # In production you'd track last_train_count in the DB.
+        if count % 10 == 0:
+            return self.retrain_face(name)
+        return False
 
     def train_new_face(self, name: str) -> bool:
         """
