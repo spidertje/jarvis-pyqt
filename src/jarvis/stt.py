@@ -14,9 +14,10 @@ Protocol:
 import asyncio
 import json
 import logging
-import numpy as np
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Optional
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -24,35 +25,35 @@ logger = logging.getLogger(__name__)
 @dataclass
 class WyomingConfig:
     """Wyoming protocol server configuration."""
+
     host: str = "192.168.55.41"
     port: int = 10300
     sample_rate: int = 16000
     width: int = 2  # 16-bit
     channels: int = 1
-    device: Optional[int] = None  # -1 means default, None means let sounddevice decide
+    device: int | None = None  # -1 means default, None means let sounddevice decide
 
 
 class WhisperSTT:
     """Faster-whisper STT client via Wyoming protocol."""
 
-    def __init__(self, config: Optional[WyomingConfig] = None):
+    def __init__(self, config: WyomingConfig | None = None):
         self.config = config or WyomingConfig()
-        self._reader: Optional[asyncio.StreamReader] = None
-        self._writer: Optional[asyncio.StreamWriter] = None
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
         self._connected = False
 
     async def connect(self, timeout: float = 5.0) -> bool:
         """Connect to faster-whisper via Wyoming protocol."""
         try:
             self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(
-                    self.config.host,
-                    self.config.port
-                ),
+                asyncio.open_connection(self.config.host, self.config.port),
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
-            logger.error(f"Connection timeout to faster-whisper at {self.config.host}:{self.config.port}")
+            logger.error(
+                f"Connection timeout to faster-whisper at {self.config.host}:{self.config.port}"
+            )
             return False
         except Exception as e:
             logger.error(f"Failed to connect to faster-whisper: {e}")
@@ -66,7 +67,10 @@ class WhisperSTT:
         try:
             event = await asyncio.wait_for(self._read_event(), timeout=5.0)
             if event and event.get("type") == "welcome":
-                logger.info(f"Wyoming server welcomed — features: {event.get('data', {}).get('features', [])}")
+                logger.info(
+                    f"Wyoming server welcomed — "
+                    f"features: {event.get('data', {}).get('features', [])}"
+                )
             elif event:
                 logger.info(f"Wyoming server response: {event.get('type')}")
         except (asyncio.TimeoutError, asyncio.IncompleteReadError):
@@ -85,6 +89,20 @@ class WhisperSTT:
             except Exception:
                 pass
         self._connected = False
+        self._reader = None
+        self._writer = None
+
+    async def reconnect(self, timeout: float = 5.0) -> bool:
+        """Force a fresh connection (useful after errors)."""
+        await self.disconnect()
+        return await self.connect(timeout)
+
+    async def _ensure_connected(self) -> bool:
+        """Ensure we have a valid connection. Reconnect if needed."""
+        if not self._connected or self._writer is None or self._writer.is_closing():
+            logger.info("STT: connection lost, attempting reconnect...")
+            return await self.connect()
+        return True
 
     def _is_silence(self, audio_data: bytes, threshold: float = 500) -> bool:
         """Check if audio data is silence (RMS amplitude below threshold)."""
@@ -94,22 +112,26 @@ class WhisperSTT:
         rms = np.sqrt(np.mean(samples.astype(np.float64) ** 2))
         return rms < threshold
 
-    async def listen(self, timeout: float = 5.0, silence_threshold: float = 500,
-                     on_voice_level: Optional[callable] = None) -> Optional[str]:
+    async def listen(
+        self,
+        timeout: float = 5.0,
+        silence_threshold: float = 100.0,
+        on_voice_level: Callable[[float], None] | None = None,
+    ) -> str | None:
         """
         Record audio from microphone and transcribe it.
 
         Records for up to `timeout` seconds, or stops on silence detection.
 
         Args:
-            timeout: Max recording time in seconds
+             timeout: Max recording time in seconds
             silence_threshold: RMS amplitude threshold for silence detection
-            on_voice_level: Optional callback(float) called with normalized amplitude (0–1) per chunk
+            on_voice_level: Optional callback(float) for mic amplitude (0–1)
 
         Returns:
             Transcribed text or None on failure.
         """
-        if not self._connected:
+        if not await self._ensure_connected():
             logger.info("STT: Connecting...")
             if not await self.connect():
                 return None
@@ -132,17 +154,20 @@ class WhisperSTT:
         max_silence_chunks = int(timeout / chunk_duration)
         speech_detected = False
 
-        logger.info(f"STT: Listening... (device={self.config.device}, sample_rate={self.config.sample_rate})")
+        logger.info(
+            f"STT: Listening... (device={self.config.device}, "
+            f"sample_rate={self.config.sample_rate})"
+        )
 
         try:
             while True:
                 # Record a chunk from microphone (offload blocking call to thread)
-                rec_kwargs = dict(
-                    samplerate=self.config.sample_rate,
-                    channels=self.config.channels,
-                    dtype="int16",
-                    blocking=True,
-                )
+                rec_kwargs = {
+                    "samplerate": self.config.sample_rate,
+                    "channels": self.config.channels,
+                    "dtype": "int16",
+                    "blocking": True,
+                }
                 if self.config.device is not None:
                     rec_kwargs["device"] = self.config.device
                 chunk = await asyncio.to_thread(sd.rec, chunk_size, **rec_kwargs)
@@ -164,7 +189,10 @@ class WhisperSTT:
                 if self._is_silence(chunk_bytes, silence_threshold):
                     silence_chunks += 1
                     if silence_chunks >= max_silence_chunks:
-                        logger.info(f"Silence detected after {len(accumulated) / self.config.width / self.config.sample_rate:.1f}s")
+                        logger.info(
+                            f"Silence detected after "
+                            f"{len(accumulated) / self.config.width / self.config.sample_rate:.1f}s"
+                        )
                         break
                 else:
                     silence_chunks = 0
@@ -184,7 +212,11 @@ class WhisperSTT:
             return None
 
         # Transcribe the accumulated audio
-        logger.info(f"Transcribing {len(accumulated) / self.config.width / self.config.sample_rate:.1f}s of audio...")
+        logger.info(
+            f"Transcribing "
+            f"{len(accumulated) / self.config.width / self.config.sample_rate:.1f}s "
+            "of audio..."
+        )
         text = await self.transcribe(accumulated)
         return text
 
@@ -192,11 +224,12 @@ class WhisperSTT:
         """Get sounddevice module."""
         try:
             import sounddevice as sd
+
             return sd
         except ImportError:
             return None
 
-    def _find_input_device(self, sd) -> Optional[int]:
+    def _find_input_device(self, sd) -> int | None:
         """Find the best input device by testing each one for audio levels."""
         try:
             devices = sd.query_devices()
@@ -267,7 +300,7 @@ class WhisperSTT:
 
         return event
 
-    async def transcribe(self, audio_data: bytes) -> Optional[str]:
+    async def transcribe(self, audio_data: bytes) -> str | None:
         """
         Transcribe audio via Wyoming protocol.
 
@@ -277,15 +310,15 @@ class WhisperSTT:
         Returns:
             Transcribed text or None on failure.
         """
-        if not self._connected:
+        if not await self._ensure_connected():
             if not await self.connect():
                 return None
 
         try:
             return await self._do_transcribe(audio_data)
 
-        except Exception as e:
-            logger.error(f"Whisper STT error: {e}")
+        except (ConnectionError, asyncio.ConnectionError, asyncio.IncompleteReadError) as e:
+            logger.warning(f"STT connection error: {e} — will reconnect on next call")
             self._connected = False
             # Try reconnecting and retrying once
             logger.info("Attempting STT reconnection...")
@@ -295,28 +328,38 @@ class WhisperSTT:
                 except Exception as e2:
                     logger.error(f"STT retry also failed: {e2}")
             return None
+        except Exception as e:
+            logger.error(f"Whisper STT error: {e}")
+            return None
 
-    async def _do_transcribe(self, audio_data: bytes) -> Optional[str]:
+    async def _do_transcribe(self, audio_data: bytes) -> str | None:
         """Send audio data and read back the transcript."""
         # Send transcribe request with audio format metadata
-        self._send_event("transcribe", {
-            "rate": self.config.sample_rate,
-            "width": self.config.width,
-            "channels": self.config.channels,
-        })
+        self._send_event(
+            "transcribe",
+            {
+                "rate": self.config.sample_rate,
+                "width": self.config.width,
+                "channels": self.config.channels,
+            },
+        )
         await self._writer.drain()
 
         # Send audio chunks with format metadata in data + raw audio as payload
         chunk_size = 3200  # ~100ms at 16kHz 16-bit mono
         timestamp = 0
         for i in range(0, len(audio_data), chunk_size):
-            chunk = audio_data[i:i + chunk_size]
-            self._send_event("audio-chunk", {
-                "rate": self.config.sample_rate,
-                "width": self.config.width,
-                "channels": self.config.channels,
-                "timestamp": timestamp,
-            }, payload=chunk)
+            chunk = audio_data[i : i + chunk_size]
+            self._send_event(
+                "audio-chunk",
+                {
+                    "rate": self.config.sample_rate,
+                    "width": self.config.width,
+                    "channels": self.config.channels,
+                    "timestamp": timestamp,
+                },
+                payload=chunk,
+            )
             timestamp += len(chunk) // (self.config.width * self.config.channels)
             await self._writer.drain()
 
@@ -340,4 +383,3 @@ class WhisperSTT:
                 break
 
         return text
-

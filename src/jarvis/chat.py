@@ -6,9 +6,7 @@ Talks to any OpenAI-format LLM endpoint (local Ollama, LM Studio, Hindsight, etc
 
 import json
 import logging
-import os
-from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from dataclasses import dataclass
 
 import aiohttp
 
@@ -18,8 +16,9 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ChatConfig:
     """LLM endpoint configuration."""
-    base_url: Optional[str] = None
-    api_key: Optional[str] = None
+
+    base_url: str | None = None
+    api_key: str | None = None
     model: str = "auto"
     temperature: float = 0.7
     max_tokens: int = 1024
@@ -30,16 +29,18 @@ class ChatConfig:
 class ChatClient:
     """Simple chat client for OpenAI-compatible APIs."""
 
-    def __init__(self, config: Optional[ChatConfig] = None):
+    def __init__(self, config: ChatConfig | None = None):
         self.config = config or ChatConfig()
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session: aiohttp.ClientSession | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             headers = {}
             if self.config.api_key:
                 headers["Authorization"] = f"Bearer {self.config.api_key}"
-            timeout = aiohttp.ClientTimeout(total=self.config.timeout) if self.config.timeout else None
+            timeout = (
+                aiohttp.ClientTimeout(total=self.config.timeout) if self.config.timeout else None
+            )
             self._session = aiohttp.ClientSession(
                 headers=headers,
                 timeout=timeout,
@@ -52,10 +53,10 @@ class ChatClient:
 
     async def chat(
         self,
-        messages: List[Dict[str, str]],
+        messages: list[dict[str, str]],
         stream: bool = False,
-        system_prompt: Optional[str] = None,
-    ) -> Optional[str]:
+        system_prompt: str | None = None,
+    ) -> str | None:
         """
         Send chat messages and get a response.
 
@@ -90,7 +91,7 @@ class ChatClient:
             logger.error(f"Chat error: {e}")
             return None
 
-    async def _nonstream_chat(self, session: aiohttp.ClientSession, payload: dict) -> Optional[str]:
+    async def _nonstream_chat(self, session: aiohttp.ClientSession, payload: dict) -> str | None:
         """Get a complete response in one shot."""
         if not self.config.base_url:
             logger.error("No LLM base_url configured")
@@ -109,7 +110,7 @@ class ChatClient:
         session: aiohttp.ClientSession,
         payload: dict,
         on_token=None,
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Stream tokens from the API.
 

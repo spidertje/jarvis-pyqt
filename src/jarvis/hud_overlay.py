@@ -16,18 +16,20 @@ Animated by QTimer at 60fps. Activity level drives color (cyan idle → amber sp
 and animation speed.
 """
 
-from typing import Optional
 import math
 import random
-from PyQt6.QtWidgets import QWidget
-from PyQt6.QtCore import Qt, QTimer, QPointF, pyqtSignal
+
+from PyQt6.QtCore import QPointF, Qt, QTimer
 from PyQt6.QtGui import (
-    QPainter, QColor, QPen, QRadialGradient, QFont,
-    QPainterPath, QPolygonF,
+    QColor,
+    QFont,
+    QPainter,
+    QPen,
+    QRadialGradient,
 )
+from PyQt6.QtWidgets import QWidget
 
 from .state import JarvisState
-
 
 # ── Configuration ──────────────────────────────────────────────────────
 PARTICLE_COUNT = 60
@@ -48,9 +50,7 @@ class HUDOverlay(QWidget):
         super().__init__(parent)
 
         # Normal window that stays on top for visibility
-        self.setWindowFlags(
-            Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint
-        )
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.setStyleSheet("background-color: #000000;")
         self.resize(800, 600)
@@ -92,7 +92,7 @@ class HUDOverlay(QWidget):
         self._contrast_factor: float = 1.0
 
         # Optional fixed hue from appearance settings (None = automatic)
-        self._palette_hue: Optional[int] = None
+        self._palette_hue: int | None = None
 
         # Timer: 60fps
         self._timer = QTimer(self)
@@ -141,10 +141,12 @@ class HUDOverlay(QWidget):
         if state == JarvisState.SPEAKING:
             # Emit 3 concentric wave rings
             for i in range(3):
-                self._wave_rings.append({
-                    "phase": i * 0.6,
-                    "speed": WAVE_SPEED,
-                })
+                self._wave_rings.append(
+                    {
+                        "phase": i * 0.6,
+                        "speed": WAVE_SPEED,
+                    }
+                )
 
     def set_activity(self, value: float):
         """Override activity level directly (drives animation speed/color)."""
@@ -215,7 +217,7 @@ class HUDOverlay(QWidget):
             if self._state == JarvisState.LISTENING:
                 # Voice level drives bar height — amplified with exponential curve
                 # so small voice changes are clearly visible
-                lvl = self._voice_level ** 0.6  # boost quiet speech
+                lvl = self._voice_level**0.6  # boost quiet speech
                 target = 6.0 + random.random() * 24.0 * lvl
             elif self._state == JarvisState.SPEAKING:
                 target = 10.0 + random.random() * 20.0 * self._activity
@@ -226,21 +228,23 @@ class HUDOverlay(QWidget):
     def _init_particles():
         particles = []
         for _ in range(PARTICLE_COUNT):
-            particles.append({
-                "x": random.uniform(0, 800),
-                "y": random.uniform(0, 600),
-                "size": random.uniform(1, 3),
-                "sx": random.uniform(-PARTICLE_SPEED_BASE, PARTICLE_SPEED_BASE),
-                "sy": random.uniform(-PARTICLE_SPEED_BASE, PARTICLE_SPEED_BASE),
-                "op": random.uniform(0.3, 0.8),
-            })
+            particles.append(
+                {
+                    "x": random.uniform(0, 800),
+                    "y": random.uniform(0, 600),
+                    "size": random.uniform(1, 3),
+                    "sx": random.uniform(-PARTICLE_SPEED_BASE, PARTICLE_SPEED_BASE),
+                    "sy": random.uniform(-PARTICLE_SPEED_BASE, PARTICLE_SPEED_BASE),
+                    "op": random.uniform(0.3, 0.8),
+                }
+            )
         return particles
 
     # ── Color helper ─────────────────────────────────────────────────
     @staticmethod
-    def _color(h: int, s: int, l: int, a: int) -> QColor:
+    def _color(h: int, s: int, light: int, a: int) -> QColor:
         c = QColor()
-        c.setHsl(h, s, l)
+        c.setHsl(h, s, light)
         c.setAlpha(max(0, min(255, int(a))))
         return c
 
@@ -262,7 +266,7 @@ class HUDOverlay(QWidget):
         elif act < 0.4:
             hue = 182  # cyan
         elif act > 0.7:
-            hue = 45   # amber
+            hue = 45  # amber
         else:
             hue = 120  # green (transition)
         sat = int((170 + int((1 - act) * 30)) * self._contrast_factor)
@@ -371,9 +375,12 @@ class HUDOverlay(QWidget):
             start_deg = int(math.degrees(a) * 16)
             span_deg = int(math.degrees(span) * 16)
             p.drawArc(
-                int(cx - r), int(cy - r),
-                int(r * 2), int(r * 2),
-                start_deg, span_deg,
+                int(cx - r),
+                int(cy - r),
+                int(r * 2),
+                int(r * 2),
+                start_deg,
+                span_deg,
             )
 
             # Glow fill when active
@@ -382,9 +389,12 @@ class HUDOverlay(QWidget):
                 p.setBrush(fill)
                 p.setPen(Qt.PenStyle.NoPen)
                 p.drawPie(
-                    int(cx - r), int(cy - r),
-                    int(r * 2), int(r * 2),
-                    start_deg, span_deg,
+                    int(cx - r),
+                    int(cy - r),
+                    int(r * 2),
+                    int(r * 2),
+                    start_deg,
+                    span_deg,
                 )
 
     def _draw_wave_rings(self, p, cx, cy, act, hue, sat):
@@ -414,7 +424,8 @@ class HUDOverlay(QWidget):
             x = start_x + i * (bar_w + gap)
             ba = int(150 + 105 * act)
             bcol = self._color(
-                hue, sat,
+                hue,
+                sat,
                 70 + int(h / 60 * 30),
                 ba,
             )
@@ -424,7 +435,6 @@ class HUDOverlay(QWidget):
 
     def _draw_particles(self, p, act, hue, sat):
         """Floating particles with activity-modulated opacity and size."""
-        part_scale = 0.5 + act * 0.5
         for pt in self._particles:
             pa = int(pt["op"] * 255 * (0.5 + act * 0.5))
             sz = pt["size"] * (1 + act * 0.5)
@@ -436,11 +446,11 @@ class HUDOverlay(QWidget):
         """Lines between nearby particles."""
         conn_a = int(15 + act * 30)
         dist = CONN_DISTANCE + act * (CONN_DISTANCE_ACTIVE - CONN_DISTANCE)
-        pen = QPen(            self._color(hue, sat, 50, conn_a), 0.8)
+        pen = QPen(self._color(hue, sat, 50, conn_a), 0.8)
         p.setPen(pen)
 
         for i, a_p in enumerate(self._particles):
-            for b_p in self._particles[i + 1:]:
+            for b_p in self._particles[i + 1 :]:
                 dx = a_p["x"] - b_p["x"]
                 dy = a_p["y"] - b_p["y"]
                 d = math.sqrt(dx * dx + dy * dy)

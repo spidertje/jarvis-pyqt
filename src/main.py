@@ -10,36 +10,38 @@ Phases:
   5. Profile switching + polish
 """
 
-import sys
+import asyncio
+import logging
 import os
+import sys
+import threading
 import time
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
-import asyncio
-from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-    QLineEdit, QPushButton, QLabel, QFrame,
-)
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPixmap, QPainter, QColor, QPen, QFont, QPalette, QImage
-
-from jarvis.hud_overlay import HUDOverlay
-from jarvis.face_screen import FaceRecScreen
-from jarvis.state import JarvisState
-from jarvis.agent import JarvisAgent, AgentConfig, ChatConfig
-from jarvis.stt import WyomingConfig as STTWyomingConfig
-from jarvis.tts import WyomingConfig as TTSWyomingConfig
-from jarvis.face import FaceConfig
-from jarvis.profile import ProfileManager, Profile
-from jarvis.settings import SettingsDialog
-
-from PyQt6.QtCore import QThread, pyqtSignal
-import threading
 import cv2
 import numpy as np
-import logging
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QImage, QPalette
+from PyQt6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from jarvis.agent import AgentConfig, JarvisAgent
+from jarvis.config import AppConfig
+from jarvis.face import FaceConfig
+from jarvis.face_screen import FaceRecScreen
+from jarvis.hud_overlay import HUDOverlay
+from jarvis.settings import SettingsDialog
+from jarvis.state import JarvisState
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,7 @@ class FaceRecThread(QThread):
     unknown_face_detected = pyqtSignal()  # face seen but not recognized
     face_registered = pyqtSignal(str)  # name
     samples_progress = pyqtSignal(int, int)  # collected, target
+    enrollment_error = pyqtSignal(str)  # error message
 
     def __init__(self, config: FaceConfig, parent=None):
         super().__init__(parent)
@@ -96,6 +99,7 @@ class FaceRecThread(QThread):
         self._collecting_name = ""
         self._collected_samples = 0
         self._last_unknown_face_time: float = 0.0
+        self._last_enrollment_error_time: float = 0.0
 
     def _numpy_to_qimage(self, frame: np.ndarray) -> QImage:
         """Convert a BGR numpy frame to an RGB QImage."""
@@ -145,38 +149,42 @@ class FaceRecThread(QThread):
                 # ── Face enrollment mode ──────────────────────────────
                 if faces:
                     added = self.recognizer.add_face(self._collecting_name, frame)
-                    if added:
+                    if not added:
+                        now = time.time()
+                        if now - self._last_enrollment_error_time >= 5.0:
+                            self._last_enrollment_error_time = now
+                            db_err = getattr(self.recognizer, "_last_db_error", None)
+                            detail = f" ({db_err})" if db_err else ""
+                            self.enrollment_error.emit(
+                                f"Could not store face sample for "
+                                f"'{self._collecting_name}'{detail}. "
+                                f"Open Settings → Database to verify DB host, "
+                                f"user, and password."
+                            )
+                    else:
+                        self._last_enrollment_error_time = 0.0
                         self._collected_samples += 1
                         self.samples_progress.emit(
                             self._collected_samples, self.config.min_faces_to_add
                         )
-                    if self._collected_samples >= self.config.min_faces_to_add:
-                        # Train and store the new model
-                        self.recognizer.train_new_face(self._collecting_name)
+                if self._collecting and self._collected_samples >= self.config.min_faces_to_add:
+                    # Train and store the new model
+                    if self.recognizer.train_new_face(self._collecting_name):
                         self._collecting = False
                         self._collected_samples = 0
                         self.face_registered.emit(self._collecting_name)
+                    else:
+                        logger.error(f"Failed to train model for {self._collecting_name}")
+                        self._collecting = False
+                        self._collected_samples = 0
             else:
                 # ── Normal recognition mode ──────────────────────────
                 if faces and self.recognizer._models:
-                    name = self.recognizer.recognize(frame)
-                    if name:
-                        # Extract confidence for the recognized face
-                        conf = 0.0
-                        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                        x, y, w, h = faces[0]
-                        roi = gray[y:y + h, x:x + w]
-                        roi = cv2.resize(roi, self.config.resize_dims)
-                        if name in self.recognizer._models:
-                            model = self.recognizer._models[name]
-                            try:
-                                _, conf = model.predict(roi)
-                            except Exception as e:
-                                logger.debug(
-                                    f"Confidence prediction failed for {name}: {e}"
-                                )
+                    result = self.recognizer.recognize(frame)
+                    if result:
+                        name, raw_conf = result
                         # LBPH distance (lower = better); convert to percentage
-                        confidence_pct = max(0.0, 100.0 - conf)
+                        confidence_pct = max(0.0, 100.0 - raw_conf)
                         self.face_detected.emit(name, confidence_pct)
                     else:
                         # Face detected but not recognized — prompt for enrollment
@@ -233,34 +241,79 @@ class JarvisApp(QWidget):
         self.face_screen.move(0, 0)
 
         # Agent
-        # Build agent config (env vars override defaults)
+        # Load persistent config (env vars + .env + config.json)
+        self.app_config = AppConfig.load()
+
+        # Build agent config from AppConfig
         agent_config = AgentConfig()
+        # LLM
+        agent_config.llm_base_url = self.app_config.llm_base_url
+        agent_config.llm_api_key = self.app_config.llm_api_key
+        agent_config.llm_model = self.app_config.llm_model
+        agent_config.chat.model = self.app_config.llm_model
+        # STT
+        agent_config.stt.host = self.app_config.stt_host
+        agent_config.stt.port = self.app_config.stt_port
+        # TTS
+        agent_config.tts.host = self.app_config.tts_host
+        agent_config.tts.port = self.app_config.tts_port
+        agent_config.tts_voice = self.app_config.tts_voice
+        # Audio
+        agent_config.audio.device = self.app_config.audio_output_device
+        # DB
+        agent_config.profile_db_host = self.app_config.db_host
+        agent_config.profile_db_port = self.app_config.db_port
+        agent_config.profile_db_name = self.app_config.db_name
+        agent_config.profile_db_user = self.app_config.db_user
+        agent_config.profile_db_password = self.app_config.db_password
+        # Appearance
+        agent_config.palette_index = self.app_config.palette_index
+        agent_config.contrast_boost = self.app_config.contrast_boost
+        # Assistant name
+        agent_config.assistant_name = self.app_config.assistant_name
+        # STT
+        agent_config.silence_timeout = self.app_config.silence_timeout
+        agent_config.silence_threshold = self.app_config.stt_sensitivity
+
         self.agent = JarvisAgent(agent_config, hud=self.hud)
         # Apply palette hue from agent config if available
-        if hasattr(agent_config, 'palette_index') and agent_config.palette_index is not None:
+        if hasattr(agent_config, "palette_index") and agent_config.palette_index is not None:
             # Map index to hue (same as in settings)
-            palette_hues = [182, 30, 120, 250, 200, 0, 80, 220, 40, 60]  # cyan, copper, emerald, violet, matrix, red, green, blue, yellow, orange
+            palette_hues = [182, 30, 120, 250, 200, 0, 80, 220, 40, 60]
             idx = agent_config.palette_index
             if 0 <= idx < len(palette_hues):
                 self.hud.set_palette_hue(palette_hues[idx])
+
+        # Apply contrast factor to HUD
+        self.hud.set_contrast_factor(agent_config.contrast_boost / 100.0)
 
         # Start async event loop in background thread
         self.event_loop_thread = EventLoopThread()
         self.event_loop_thread.start()
 
         # Face recognition thread
-        face_config = FaceConfig(camera_index=0)
+        face_config = FaceConfig(
+            camera_index=self.app_config.camera_index,
+            db_host=self.app_config.db_host,
+            db_port=self.app_config.db_port,
+            db_user=self.app_config.db_user,
+            db_password=self.app_config.db_password,
+            db_name=self.app_config.db_name,
+            confidence_threshold=self.app_config.face_confidence_threshold * 100,
+        )
         self.face_thread = FaceRecThread(face_config)
         self.face_thread.face_detected.connect(self._on_face_detected)
         self.face_thread.frame_captured.connect(self.face_screen.set_frame)
         self.face_thread.unknown_face_detected.connect(self._on_unknown_face)
         self.face_thread.face_registered.connect(self._on_face_registered)
         self.face_thread.samples_progress.connect(self._on_samples_progress)
+        self.face_thread.enrollment_error.connect(self._on_enrollment_error)
 
         # Face recognition screen management
         self._face_rec_active = True
         self._enrollment_prompted = False  # Track if name dialog already shown
         self._transition_timer = None
+        self._enrollment_delay_timer: QTimer | None = None
         self.face_screen.show()
 
         # Timeout: if no face recognized within 10 seconds, fall back to HUD
@@ -300,12 +353,9 @@ class JarvisApp(QWidget):
 
     def _setup_ui(self):
         """Set up the foreground UI controls."""
-        self.setWindowTitle(getattr(self.agent.config, 'assistant_name', 'Jarvis'))
+        self.setWindowTitle(getattr(self.agent.config, "assistant_name", "Jarvis"))
         self.resize(800, 600)
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-        )
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
         # Main layout
@@ -458,6 +508,8 @@ class JarvisApp(QWidget):
         if self._face_rec_active:
             self._face_rec_active = False
             self._face_timeout.stop()
+            if self._enrollment_delay_timer:
+                self._enrollment_delay_timer.stop()
             self.face_screen.set_face_detected(name, confidence)
             self._start_transition_check()
 
@@ -467,6 +519,8 @@ class JarvisApp(QWidget):
             return
         logger.info("Face recognition timeout — falling back to HUD")
         self._face_rec_active = False
+        if self._enrollment_delay_timer:
+            self._enrollment_delay_timer.stop()
         self.face_screen.set_status("No registered face found. Loading Jarvis...")
         self.face_screen.start_fade()
         self._start_transition_check()
@@ -476,6 +530,8 @@ class JarvisApp(QWidget):
         if self._face_rec_active:
             self._face_rec_active = False
             self._face_timeout.stop()
+        if self._enrollment_delay_timer:
+            self._enrollment_delay_timer.stop()
         self._start_transition_check()
 
     def _start_transition_check(self):
@@ -500,13 +556,26 @@ class JarvisApp(QWidget):
     # ── Face enrollment handlers ──────────────────────────────────────
 
     def _on_unknown_face(self):
-        """An unknown face was detected — prompt for a name immediately."""
+        """An unknown face was detected — wait briefly before prompting for enrollment."""
         if not self._face_rec_active:
             return  # Already past the splash screen
         if self._enrollment_prompted:
             return  # Name dialog already shown — don't reset it
-        logger.info("Unknown face detected — prompting for name")
+        # Debounce: only trigger the delay once per unknown-face burst
+        if self._enrollment_delay_timer and self._enrollment_delay_timer.isActive():
+            return
+        logger.info("Unknown face detected — will prompt for name in 3s")
         self._face_timeout.stop()  # Give user unlimited time to enter a name
+
+        self._enrollment_delay_timer = QTimer(self)
+        self._enrollment_delay_timer.setSingleShot(True)
+        self._enrollment_delay_timer.timeout.connect(self._show_name_input)
+        self._enrollment_delay_timer.start(3000)
+
+    def _show_name_input(self):
+        """Actually display the name input overlay after the delay."""
+        if not self._face_rec_active:
+            return
         self._enrollment_prompted = True
         self.face_screen.show_name_input()
 
@@ -520,6 +589,11 @@ class JarvisApp(QWidget):
         """Update sample collection progress on the face screen."""
         self.face_screen.show_sample_progress(collected, target)
 
+    def _on_enrollment_error(self, msg: str):
+        """Show a DB or sample-collection error on the face screen."""
+        logger.error(msg)
+        self.face_screen.set_status(msg)
+
     def _on_face_registered(self, name: str):
         """Face model trained and stored — new face is now recognizable."""
         logger.info(f"Face registered for: {name}")
@@ -531,23 +605,69 @@ class JarvisApp(QWidget):
 
     def _open_settings(self):
         """Open the settings/preferences dialog."""
-        dialog = SettingsDialog(agent_config=self.agent.config, agent=self.agent, parent=self)
+        dialog = SettingsDialog(
+            agent_config=self.agent.config,
+            app_config=self.app_config,
+            agent=self.agent,
+            parent=self,
+        )
         dialog.face_config = self._build_face_config()
         dialog.on_face_restart = self._restart_face_thread
         dialog.exec()
 
+        # After dialog closes, persist any changes from SettingsDialog
+        # that modified app_config (e.g., appearance, silence timeout)
+        self._save_app_config()
+
+    def _save_app_config(self):
+        """Sync in-memory app_config with agent config, then persist to disk."""
+        pw_len = len(self.agent.config.profile_db_password or "")
+        logger.debug(f"_save_app_config: db_password length={pw_len}")
+        # Sync settings back to AppConfig
+        self.app_config.llm_base_url = self.agent.config.llm_base_url
+        self.app_config.llm_api_key = self.agent.config.llm_api_key
+        self.app_config.llm_model = self.agent.config.llm_model
+        self.app_config.stt_host = self.agent.config.stt.host
+        self.app_config.stt_port = self.agent.config.stt.port
+        self.app_config.tts_host = self.agent.config.tts.host
+        self.app_config.tts_port = self.agent.config.tts.port
+        self.app_config.tts_voice = self.agent.config.tts_voice
+        self.app_config.db_host = self.agent.config.profile_db_host
+        self.app_config.db_port = self.agent.config.profile_db_port
+        self.app_config.db_name = self.agent.config.profile_db_name
+        self.app_config.db_user = self.agent.config.profile_db_user
+        self.app_config.db_password = self.agent.config.profile_db_password
+        self.app_config.assistant_name = self.agent.config.assistant_name
+        self.app_config.silence_timeout = self.agent.config.silence_timeout
+        self.app_config.stt_sensitivity = self.agent.config.silence_threshold
+        self.app_config.palette_index = self.agent.config.palette_index
+        self.app_config.contrast_boost = self.agent.config.contrast_boost
+
+        # Save to config file
+        try:
+            self.app_config.save()
+        except Exception as e:
+            logger.warning(f"Failed to save config: {e}")
+
     def _build_face_config(self) -> FaceConfig:
-        """Build a FaceConfig from current face_thread config."""
+        """Build a FaceConfig from current face_thread config, preserving DB settings."""
         cfg = FaceConfig()
-        if hasattr(self, 'face_thread') and hasattr(self.face_thread, 'config'):
-            cfg.camera_index = self.face_thread.config.camera_index
+        if hasattr(self, "face_thread") and hasattr(self.face_thread, "config"):
+            existing = self.face_thread.config
+            cfg.camera_index = existing.camera_index
+            cfg.db_host = existing.db_host
+            cfg.db_port = existing.db_port
+            cfg.db_user = existing.db_user
+            cfg.db_password = existing.db_password
+            cfg.db_name = existing.db_name
+            cfg.confidence_threshold = existing.confidence_threshold
         return cfg
 
     def _restart_face_thread(self, new_config: FaceConfig):
         """Stop old face thread and start new one with updated config."""
         logger.info(f"Restarting face thread with camera={new_config.camera_index}")
         # Stop current thread
-        if hasattr(self, 'face_thread'):
+        if hasattr(self, "face_thread"):
             self.face_thread.stop()
         # Create and start new thread
         self.face_thread = FaceRecThread(new_config)
@@ -556,6 +676,7 @@ class JarvisApp(QWidget):
         self.face_thread.unknown_face_detected.connect(self._on_unknown_face)
         self.face_thread.face_registered.connect(self._on_face_registered)
         self.face_thread.samples_progress.connect(self._on_samples_progress)
+        self.face_thread.enrollment_error.connect(self._on_enrollment_error)
         self.face_thread.start()
         logger.info("Face thread restarted")
 
@@ -577,9 +698,7 @@ class JarvisApp(QWidget):
             logger.info("Voice mode started — beginning listen loop")
             if self.event_loop_thread.loop:
                 loop = self.event_loop_thread.loop
-                loop.call_soon_threadsafe(
-                    loop.create_task, self._voice_loop()
-                )
+                loop.call_soon_threadsafe(loop.create_task, self._voice_loop())
             else:
                 print("Error: async event loop not available")
 
@@ -590,6 +709,7 @@ class JarvisApp(QWidget):
                 await self.agent._run_voice()
             except Exception as e:
                 import traceback
+
                 logger.error(f"Voice loop error: {e}")
                 logger.error(traceback.format_exc())
             await asyncio.sleep(0.1)  # Brief pause between cycles
@@ -602,9 +722,7 @@ class JarvisApp(QWidget):
         self.chat_input.clear()
         self._status_updated.emit("Thinking...")
         if self.event_loop_thread and self.event_loop_thread.loop:
-            asyncio.run_coroutine_threadsafe(
-                self._send_chat(text), self.event_loop_thread.loop
-            )
+            asyncio.run_coroutine_threadsafe(self._send_chat(text), self.event_loop_thread.loop)
 
     async def _send_chat(self, text: str):
         """Send a text message and get response (with optional TTS)."""
@@ -618,11 +736,11 @@ class JarvisApp(QWidget):
             self._voice_task.cancel()
 
         # Stop face detection thread
-        if hasattr(self, 'face_thread'):
+        if hasattr(self, "face_thread"):
             self.face_thread.stop()
 
         # Hide face screen
-        if hasattr(self, 'face_screen'):
+        if hasattr(self, "face_screen"):
             self.face_screen.hide()
 
         # Stop transition timer
@@ -632,24 +750,19 @@ class JarvisApp(QWidget):
         # Reset enrollment state
         self._enrollment_prompted = False
 
-        # Stop event loop thread
-        if hasattr(self, 'event_loop_thread'):
-            self.event_loop_thread.stop()
-
-        # Close all services
+        # Close all async services — must happen BEFORE stopping the event loop thread
         try:
-            if self.event_loop_thread.loop:
-                import asyncio
+            if self.event_loop_thread.loop and not self.event_loop_thread.loop.is_closed():
                 fut = asyncio.run_coroutine_threadsafe(
                     self.agent.close(), self.event_loop_thread.loop
                 )
                 fut.result(timeout=5)
-            else:
-                # Fallback: run sync close
-                import asyncio as _ai
-                _ai.run(self.agent.close())
         except Exception as e:
             logger.warning(f"Error during shutdown: {e}")
+
+        # Stop event loop thread (last — all async work is done now)
+        if hasattr(self, "event_loop_thread"):
+            self.event_loop_thread.stop()
 
         super().closeEvent(event)
 
@@ -658,8 +771,8 @@ def main():
     # Configure logging
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-        datefmt='%H:%M:%S',
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
     )
 
     app = QApplication(sys.argv)

@@ -12,18 +12,15 @@ Usage:
     recognizer.delete(name)  # remove a model
 """
 
-import io
 import logging
 import os
-import pickle
 import tempfile
 import time
 from dataclasses import dataclass
-from typing import Optional, List, Dict
 
 import cv2
-import pymysql
 import numpy as np
+import pymysql
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +28,18 @@ logger = logging.getLogger(__name__)
 @dataclass
 class FaceConfig:
     """Face recognition configuration."""
+
     camera_index: int = 0
-    db_host: Optional[str] = None  # set via JARVIS_DB_HOST or FaceRecognizer.__init__
+    db_host: str | None = None  # set via JARVIS_DB_HOST or FaceRecognizer.__init__
     db_port: int = 3306
-    db_user: Optional[str] = None
-    db_password: Optional[str] = None  # set via JARVIS_DB_PASSWORD env var
-    db_name: Optional[str] = None
-    cascade_path: Optional[str] = None  # None = use OpenCV default
+    db_user: str | None = None
+    db_password: str | None = None  # set via JARVIS_DB_PASSWORD env var
+    db_name: str | None = None
+    # ONNX face detector (Ultra-Light-Fast-Generic-Face-Detector RFB-320).
+    detector_model: str | None = None  # None = default ~/.hermes/version-RFB-320.onnx
+    dnn_score_threshold: float = 0.6  # forward confidence cutoff (0..1)
+    # Haar cascade fallback (kept for compatibility)
+    cascade_path: str | None = None  # None = use OpenCV default
     confidence_threshold: float = 70.0  # LBPH distance threshold (lower = stricter)
     debounce_seconds: float = 2.0  # minimum time between same-name recognitions
     min_faces_to_add: int = 20  # min samples needed to train
@@ -52,7 +54,7 @@ class FaceRecognizer:
     and predicts identity using LBPH.
     """
 
-    def __init__(self, config: Optional[FaceConfig] = None):
+    def __init__(self, config: FaceConfig | None = None):
         self.config = config or FaceConfig()
         # Resolve None values from env vars (no hardcoded fallbacks)
         if self.config.db_host is None:
@@ -63,10 +65,12 @@ class FaceRecognizer:
             self.config.db_password = os.environ.get("JARVIS_DB_PASSWORD")
         if self.config.db_name is None:
             self.config.db_name = os.environ.get("JARVIS_DB_NAME")
-        self._models: Dict[str, cv2.face.LBPHFaceRecognizer] = {}
-        self._last_recognition: Dict[str, float] = {}  # name -> last recognition time
+        self._models: dict[str, cv2.face.LBPHFaceRecognizer] = {}
+        self._last_recognition: dict[str, float] = {}  # name -> last recognition time
         self._db = None
         self._cascade = None
+        self._net = None
+        self._last_db_error: str | None = None
 
     def _get_db(self) -> pymysql.Connection:
         """Get or create MariaDB connection."""
@@ -84,7 +88,7 @@ class FaceRecognizer:
                 database=self.config.db_name or "jarvis",
                 cursorclass=pymysql.cursors.DictCursor,
             )
-            # Ensure face_samples table exists (idempotent)
+            # Ensure face tables exist (idempotent)
             with self._db.cursor() as cur:
                 cur.execute(
                     """
@@ -94,6 +98,14 @@ class FaceRecognizer:
                         sample LONGBLOB NOT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         INDEX idx_name (name)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS face_model (
+                        name VARCHAR(100) PRIMARY KEY,
+                        model LONGBLOB NOT NULL
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                     """
                 )
@@ -124,6 +136,24 @@ class FaceRecognizer:
                 self._cascade = cv2.CascadeClassifier()
                 logger.warning("No cascade file found — face detection will fail")
         return self._cascade
+
+    def _get_net(self):
+        """Load ONNX face detector model (OpenCV DNN)."""
+        if self._net is None:
+            model = self.config.detector_model
+            if model is None:
+                model = os.path.expanduser("~/.hermes/version-RFB-320.onnx")
+            if os.path.exists(model):
+                try:
+                    self._net = cv2.dnn.readNetFromONNX(model)
+                    logger.info(f"Loaded ONNX face detector from {model}")
+                except Exception as e:
+                    logger.error(f"Failed to load ONNX face detector: {e}")
+                    self._net = None
+            else:
+                logger.warning(f"ONNX model not found: {model}")
+                self._net = None
+        return self._net
 
     def load_models(self) -> int:
         """
@@ -159,7 +189,7 @@ class FaceRecognizer:
             logger.error(f"Failed to load face models: {e}")
             return 0
 
-    def _load_model_blob(self, blob: bytes) -> Optional[cv2.face.LBPHFaceRecognizer]:
+    def _load_model_blob(self, blob: bytes) -> cv2.face.LBPHFaceRecognizer | None:
         """Load an LBPH model from a LONGBLOB."""
         try:
             # Try pickle deserialization first
@@ -188,30 +218,68 @@ class FaceRecognizer:
                 logger.error(f"Failed to load model blob: {e}")
                 return None
 
-    def detect_faces(self, frame: np.ndarray) -> List[tuple]:
-        """
-        Detect faces in a frame using Haar cascades.
-
-        Args:
-            frame: BGR image from webcam
-
-        Returns:
-            List of (x, y, w, h) tuples for detected faces.
-        """
+    def detect_faces(self, frame: np.ndarray) -> list[tuple]:
+        """Detect faces in a frame using ONNX (RFB-320) or Haar cascade fallback."""
+        # Try ONNX first
+        net = self._get_net()
+        if net is not None:
+            try:
+                h, w = frame.shape[:2]
+                # RFB-320 expects 320x240 input
+                blob = cv2.dnn.blobFromImage(frame, 1.0, (320, 240), (104, 117, 123), False, False)
+                net.setInput(blob)
+                scores, boxes = net.forward(
+                    net.getUnconnectedOutLayersNames()
+                )  # (1, 4420, 2), (1, 4420, 4)
+                scores = scores[0, :, 1]  # face class scores (index 1), shape (4420,)
+                boxes = boxes[0]  # (4420, 4) — cx, cy, w, h normalized
+                # Collect raw boxes + confidences for NMS
+                nms_boxes = []
+                nms_scores = []
+                for i in range(scores.shape[0]):
+                    conf = float(scores[i])
+                    if conf < self.config.dnn_score_threshold:
+                        continue
+                    cx, cy, bw, bh = boxes[i]
+                    # Denormalize to original frame size
+                    x1 = int((cx - bw / 2) * w)
+                    y1 = int((cy - bh / 2) * h)
+                    x2 = int((cx + bw / 2) * w)
+                    y2 = int((cy + bh / 2) * h)
+                    # Clamp
+                    x1 = max(0, min(x1, w - 1))
+                    y1 = max(0, min(y1, h - 1))
+                    x2 = max(0, min(x2, w))
+                    y2 = max(0, min(y2, h))
+                    if x2 > x1 and y2 > y1:
+                        nms_boxes.append([x1, y1, x2, y2])
+                        nms_scores.append(conf)
+                # Apply Non-Maximum Suppression to remove overlapping detections
+                if nms_boxes:
+                    indices = cv2.dnn.NMSBoxes(nms_boxes, nms_scores,
+                                              self.config.dnn_score_threshold, 0.3)
+                    faces = []
+                    for idx in indices.flatten():
+                        x1, y1, x2, y2 = nms_boxes[idx]
+                        faces.append((x1, y1, x2 - x1, y2 - y1))
+                    return faces
+                return []
+            except Exception as e:
+                logger.warning(f"ONNX face detection failed: {e}, falling back to Haar")
+        # Fallback to Haar cascade
         cascade = self._get_cascade()
         if cascade.empty():
             return []
-
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = cascade.detectMultiScale(
             gray,
-            scaleFactor=1.05,       # Smaller steps = more thorough detection
-            minNeighbors=6,        # Higher = fewer false positives
-            minSize=(40, 40),      # Minimum face size (pixels)
+            scaleFactor=1.05,
+            minNeighbors=6,
+            minSize=(40, 40),
         )
         return [tuple(face) for face in faces]
 
-    def recognize(self, frame: np.ndarray) -> Optional[str]:
+    def recognize(self, frame: np.ndarray) -> tuple[str, float] | None:
         """
         Detect and recognize faces in a frame.
 
@@ -219,7 +287,9 @@ class FaceRecognizer:
             frame: BGR image from webcam
 
         Returns:
-            Recognized name, or None if no face or confidence too low.
+            (Recognized name, confidence) tuple where confidence is the
+            LBPH distance (lower = better), or None if no face or
+            confidence too low.
         """
         if not self._models:
             return None
@@ -232,8 +302,8 @@ class FaceRecognizer:
         best_name = None
         best_conf = float("inf")
 
-        for (x, y, w, h) in faces:
-            roi = gray[y:y + h, x:x + w]
+        for x, y, w, h in faces:
+            roi = gray[y : y + h, x : x + w]
             roi = cv2.resize(roi, self.config.resize_dims)
 
             for name, model in self._models.items():
@@ -251,7 +321,7 @@ class FaceRecognizer:
             last = self._last_recognition.get(best_name, 0)
             if now - last >= self.config.debounce_seconds:
                 self._last_recognition[best_name] = now
-                return best_name
+                return (best_name, best_conf)
 
         return None
 
@@ -271,7 +341,7 @@ class FaceRecognizer:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         x, y, w, h = faces[0]
 
-        roi = gray[y:y + h, x:x + w]
+        roi = gray[y : y + h, x : x + w]
         roi = cv2.resize(roi, self.config.resize_dims)
 
         # Serialize ROI for DB storage
@@ -283,8 +353,9 @@ class FaceRecognizer:
         # Store sample in DB
         try:
             db = self._get_db()
-        except (RuntimeError, pymysql.err.OperationalError):
-            logger.error("DB unavailable, cannot store face sample")
+        except (RuntimeError, pymysql.err.OperationalError) as e:
+            logger.debug(f"DB unavailable, cannot store face sample: {e}")
+            self._last_db_error = str(e)
             return False
         try:
             with db.cursor() as cur:
@@ -310,7 +381,7 @@ class FaceRecognizer:
             logger.error(f"Failed to serialize ROI: {e}")
             return b""
 
-    def _deserialize_roi(self, blob: bytes) -> Optional[np.ndarray]:
+    def _deserialize_roi(self, blob: bytes) -> np.ndarray | None:
         """Deserialize a face ROI from DB bytes."""
         try:
             arr = np.frombuffer(blob, dtype=np.uint8)
@@ -454,7 +525,7 @@ class FaceRecognizer:
                 logger.error(f"Failed to serialize model: {e}")
                 return b""
 
-    def list_faces(self) -> List[str]:
+    def list_faces(self) -> list[str]:
         """List all known faces."""
         try:
             db = self._get_db()

@@ -8,21 +8,19 @@ State machine:
     SPEAKING → IDLE (done speaking)
 """
 
-import asyncio
-import json
 import logging
 import os
-import queue
-import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Optional, Callable, List, Dict
 
-from .state import JarvisState
+from .audio_player import AudioConfig, AudioPlayer
 from .chat import ChatClient, ChatConfig
-from .stt import WhisperSTT, WyomingConfig as STTConfig
-from .tts import PiperTTS, WyomingConfig as TTSConfig
-from .audio_player import AudioPlayer, AudioConfig
-from .profile import ProfileManager, Profile
+from .profile import Profile, ProfileManager
+from .state import JarvisState
+from .stt import WhisperSTT
+from .stt import WyomingConfig as STTConfig
+from .tts import PiperTTS
+from .tts import WyomingConfig as TTSConfig
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +28,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AgentConfig:
     """Full agent configuration."""
+
     # LLM
     chat: ChatConfig = field(default_factory=ChatConfig)
     # STT
@@ -39,18 +38,20 @@ class AgentConfig:
     # Audio
     audio: AudioConfig = field(default_factory=AudioConfig)
     # Profile manager — read from env vars only, no hardcoded fallbacks
-    profile_db_host: Optional[str] = None
-    profile_db_port: Optional[int] = None
-    profile_db_user: Optional[str] = None
-    profile_db_password: Optional[str] = None
-    profile_db_name: Optional[str] = None
+    profile_db_host: str | None = None
+    profile_db_port: int | None = None
+    profile_db_user: str | None = None
+    profile_db_password: str | None = None
+    profile_db_name: str | None = None
     # LLM API — read from env vars only, no hardcoded fallbacks
-    llm_base_url: Optional[str] = None
-    llm_api_key: Optional[str] = None
-    llm_model: Optional[str] = None
+    llm_base_url: str | None = None
+    llm_api_key: str | None = None
+    llm_model: str | None = None
     # STT silence timeout
     silence_timeout: float = 2.0
-    palette_index: Optional[int] = None  # index into appearance palette list
+    # STT detection sensitivity (RMS amplitude threshold — lower = more sensitive)
+    silence_threshold: float = 100.0
+    palette_index: int | None = None  # index into appearance palette list
     # Default system prompt (used when no profile is active)
     # Loaded from SOUL.md if present, otherwise fallback
     default_system_prompt: str = ""
@@ -72,11 +73,11 @@ class JarvisAgent:
 
     _DEFAULT_LLM_URL = "http://192.168.55.179:8642/v1"
 
-    def __init__(self, config: Optional[AgentConfig] = None, hud=None):
+    def __init__(self, config: AgentConfig | None = None, hud=None):
         self.config = config or AgentConfig()
         self.state = JarvisState.IDLE
         self.hud = hud
-        self._state_callbacks: List[Callable] = []
+        self._state_callbacks: list[Callable] = []
 
         # Resolve None config values from env vars
         if self.config.profile_db_host is None:
@@ -89,7 +90,12 @@ class JarvisAgent:
             self.config.profile_db_password = os.environ.get("JARVIS_DB_PASSWORD")
         if self.config.profile_db_name is None:
             self.config.profile_db_name = os.environ.get("JARVIS_DB_NAME")
-        self.config.llm_base_url = self.config.llm_base_url or os.environ.get("JARVIS_LLM_URL") or os.environ.get("JARVIS_LLM_BASE_URL") or self._DEFAULT_LLM_URL
+        self.config.llm_base_url = (
+            self.config.llm_base_url
+            or os.environ.get("JARVIS_LLM_URL")
+            or os.environ.get("JARVIS_LLM_BASE_URL")
+            or self._DEFAULT_LLM_URL
+        )
         self.config.llm_api_key = self.config.llm_api_key or os.environ.get("JARVIS_LLM_API_KEY")
         self.config.llm_model = self.config.llm_model or os.environ.get("JARVIS_LLM_MODEL")
 
@@ -115,7 +121,7 @@ class JarvisAgent:
         if stt_cfg.device is not None and stt_cfg.device < 0:
             stt_cfg.device = None
         self.stt = WhisperSTT(stt_cfg)
-        if hasattr(self.config, 'tts_voice') and self.config.tts_voice:
+        if hasattr(self.config, "tts_voice") and self.config.tts_voice:
             self.config.tts.voice = self.config.tts_voice
         self.tts = PiperTTS(self.config.tts)
         self.audio = AudioPlayer(self.config.audio)
@@ -139,7 +145,8 @@ class JarvisAgent:
             logger.info(f"Assistant name loaded from DB: {db_name}")
 
         # HUD - update with assistant name from DB
-        self.hud.set_assistant_name(self.config.assistant_name)
+        if self.hud:
+            self.hud.set_assistant_name(self.config.assistant_name)
 
         # Load default profile's system prompt at startup
         default_profile = self.profiles.get_default()
@@ -149,10 +156,10 @@ class JarvisAgent:
             self._system_prompt = self.config.default_system_prompt
 
         # Active profile
-        self._active_profile: Optional[Profile] = None
+        self._active_profile: Profile | None = None
 
         # Conversation history (per profile)
-        self._messages: List[Dict[str, str]] = []
+        self._messages: list[dict[str, str]] = []
 
     def on_state_change(self, callback: Callable):
         """Register a callback for state changes."""
@@ -214,7 +221,11 @@ class JarvisAgent:
         # Listen
         self._set_state(JarvisState.LISTENING)
         logger.info("STT: Starting listen cycle")
-        text = await self.stt.listen(timeout=8.0, silence_threshold=100, on_voice_level=self._on_voice_level)
+        text = await self.stt.listen(
+            timeout=self.config.silence_timeout * 4,
+            silence_threshold=self.config.silence_threshold,
+            on_voice_level=self._on_voice_level,
+        )
         logger.info(f"STT: Listen returned: {text!r}")
         if not text:
             if self.hud:
@@ -243,8 +254,7 @@ class JarvisAgent:
             self.audio.play(audio)
         self._set_state(JarvisState.IDLE)
 
-    async def chat_text(self, user_text: str,
-                        system_prompt: Optional[str] = None) -> str:
+    async def chat_text(self, user_text: str, system_prompt: str | None = None) -> str:
         """
         Direct text chat (no voice). Returns the assistant's response text.
         """
@@ -257,8 +267,7 @@ class JarvisAgent:
         self._set_state(JarvisState.IDLE)
         return reply or ""
 
-    async def chat_text_and_speak(self, user_text: str,
-                                  system_prompt: Optional[str] = None) -> str:
+    async def chat_text_and_speak(self, user_text: str, system_prompt: str | None = None) -> str:
         """
         Text chat with TTS response.
         """

@@ -46,9 +46,7 @@ class FaceRecScreen(QWidget):
 
         # Use Window (not just FramelessWindowHint) to ensure proper z-ordering
         # on macOS — FramelessWindowHint alone can place the window behind others.
-        self.setWindowFlags(
-            Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint
-        )
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
         self.setStyleSheet("background-color: #000000;")
         self.resize(800, 600)
 
@@ -88,16 +86,12 @@ class FaceRecScreen(QWidget):
         reg_layout.setSpacing(14)
 
         reg_title = QLabel("👤 New Face Detected")
-        reg_title.setStyleSheet(
-            "color: white; font-size: 18px; font-weight: bold;"
-        )
+        reg_title.setStyleSheet("color: white; font-size: 18px; font-weight: bold;")
         reg_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         reg_layout.addWidget(reg_title)
 
         reg_prompt = QLabel("Face detected but not recognized. Please enter your name:")
-        reg_prompt.setStyleSheet(
-            "color: rgba(200, 200, 200, 220); font-size: 12px;"
-        )
+        reg_prompt.setStyleSheet("color: rgba(200, 200, 200, 220); font-size: 12px;")
         reg_prompt.setWordWrap(True)
         reg_layout.addWidget(reg_prompt)
 
@@ -162,9 +156,7 @@ class FaceRecScreen(QWidget):
 
         # Progress label (hidden until collection starts)
         self._progress_label = QLabel("")
-        self._progress_label.setStyleSheet(
-            "color: rgba(0, 200, 255, 200); font-size: 11px;"
-        )
+        self._progress_label.setStyleSheet("color: rgba(0, 200, 255, 200); font-size: 11px;")
         self._progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         reg_layout.addWidget(self._progress_label)
 
@@ -259,7 +251,9 @@ class FaceRecScreen(QWidget):
         self._enrollment_progress = (collected, target)
         pct = int(collected / target * 100) if target > 0 else 0
         self._progress_label.setText(f"Collecting samples... {collected}/{target} ({pct}%)")
-        self._status_text = f"Collecting face samples for {self._enrollment_name}... ({collected}/{target})"
+        self._status_text = (
+            f"Collecting face samples for {self._enrollment_name}... ({collected}/{target})"
+        )
         self.update()
 
     def clear_enrollment(self):
@@ -296,7 +290,7 @@ class FaceRecScreen(QWidget):
             p.drawRect(self.rect())
 
         # 2. Face detection rectangles
-        for (x, y, fw, fh) in self._faces:
+        for x, y, fw, fh in self._faces:
             self._draw_face_rect(p, x, y, fw, fh)
 
         # 3. Scanning line animation
@@ -406,7 +400,11 @@ class FaceRecScreen(QWidget):
         p.drawText(int((w - sw) / 2), h - 40, self._status_text)
 
         # Subtext
-        sub = "Standing by for recognized face..." if not self._recognized else "Transitioning to Jarvis..."
+        sub = (
+            "Standing by for recognized face..."
+            if not self._recognized
+            else "Transitioning to Jarvis..."
+        )
         sub_font = QFont()
         sub_font.setPointSize(11)
         p.setFont(sub_font)

@@ -6,9 +6,7 @@ Uses sounddevice + numpy for playback.
 """
 
 import logging
-import queue
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 
@@ -18,16 +16,17 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AudioConfig:
     """Audio playback configuration."""
+
     sample_rate: int = 16000
     channels: int = 1
     width: int = 2  # 16-bit
-    device: Optional[int] = None  # None = default device
+    device: int | None = None  # None = default device
 
 
 class AudioPlayer:
     """Plays raw PCM audio via sounddevice."""
 
-    def __init__(self, config: Optional[AudioConfig] = None):
+    def __init__(self, config: AudioConfig | None = None):
         self.config = config or AudioConfig()
         self._stream = None
         self._playing = False
@@ -38,6 +37,7 @@ class AudioPlayer:
         """Initialize sounddevice."""
         try:
             import sounddevice as sd
+
             self._sd = sd
             devices = sd.query_devices()
             dev_index = self.config.device if self.config.device is not None else 0
@@ -65,7 +65,6 @@ class AudioPlayer:
         # Convert bytes to numpy int16 array
         width = self.config.width
         channels = self.config.channels
-        n_samples = len(pcm_data) // width
 
         if width == 2:
             samples = np.frombuffer(pcm_data, dtype=np.int16)
@@ -83,7 +82,11 @@ class AudioPlayer:
         audio_float = samples.astype(np.float32) / max_val
 
         # Handle device: -1 means default, pass None to sounddevice
-        device = self.config.device if self.config.device is not None and self.config.device >= 0 else None
+        device = (
+            self.config.device
+            if self.config.device is not None and self.config.device >= 0
+            else None
+        )
 
         try:
             self._stream = self._sd.OutputStream(
