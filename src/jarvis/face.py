@@ -46,7 +46,7 @@ class FaceConfig:
     resize_dims: tuple = (100, 100)  # resize faces to these dims for LBPH
     # Sample quality gating (root cause of inconsistent recognition: blurry/AWB-bad
     # samples get trained in). Reject samples below these thresholds.
-    sample_min_focus: float = 60.0  # min Laplacian variance of the grayscale ROI
+    sample_min_focus: float = 20.0  # min Laplacian variance of the grayscale ROI
     sample_min_brightness: float = 30.0  # min mean pixel value (too dark = reject)
     sample_max_brightness: float = 235.0  # max mean pixel value (blown out = reject)
     # Temporal voting: hold a sliding window of predictions per identity and only
@@ -82,6 +82,7 @@ class FaceRecognizer:
         self._cascade = None
         self._net = None
         self._last_db_error: str | None = None
+        self._last_sample_error: str | None = None
 
     def _get_db(self) -> pymysql.Connection:
         """Get or create MariaDB connection."""
@@ -387,6 +388,7 @@ class FaceRecognizer:
         faces = self.detect_faces(frame)
         if not faces:
             logger.warning(f"No faces detected in frame for {name}")
+            self._last_sample_error = "No face detected in frame"
             return False
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -394,19 +396,25 @@ class FaceRecognizer:
 
         roi = gray[y : y + h, x : x + w]
         # Quality gate — reject blurry / too dark / blown-out samples so they
-        # don't poison the LBPH model. This is the root cause of inconsistent
-        # recognition. Skip silently (enrollment keeps going until enough good
-        # samples accumulate).
+        # don't poison the LBPH model. Records WHY so the UI can show the real
+        # reason instead of blaming the DB.
         focus = self._laplacian_variance(roi)
         mean = float(roi.mean()) if roi.size else 0.0
         if focus < self.config.sample_min_focus:
             logger.debug(f"Rejecting sample for {name}: blurry (focus={focus:.1f})")
+            self._last_sample_error = (
+                f"Sample too blurry (focus {focus:.0f}) — hold still"
+            )
             return False
         if mean < self.config.sample_min_brightness or mean > self.config.sample_max_brightness:
             logger.debug(
                 f"Rejecting sample for {name}: bad exposure (mean={mean:.1f})"
             )
+            self._last_sample_error = (
+                f"Bad exposure (mean {mean:.0f}) — adjust lighting"
+            )
             return False
+        self._last_sample_error = None
 
         roi = cv2.resize(roi, self.config.resize_dims)
 

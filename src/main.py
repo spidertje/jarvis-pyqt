@@ -154,13 +154,18 @@ class FaceRecThread(QThread):
                         now = time.time()
                         if now - self._last_enrollment_error_time >= 5.0:
                             self._last_enrollment_error_time = now
+                            # Prefer sample-quality error (blur/exposure) over DB error
+                            sample_err = getattr(self.recognizer, "_last_sample_error", None)
                             db_err = getattr(self.recognizer, "_last_db_error", None)
-                            detail = f" ({db_err})" if db_err else ""
+                            if sample_err:
+                                detail = f": {sample_err}"
+                            elif db_err:
+                                detail = f": DB error ({db_err})"
+                            else:
+                                detail = ""
                             self.enrollment_error.emit(
                                 f"Could not store face sample for "
                                 f"'{self._collecting_name}'{detail}. "
-                                f"Open Settings → Database to verify DB host, "
-                                f"user, and password."
                             )
                     else:
                         self._last_enrollment_error_time = 0.0
