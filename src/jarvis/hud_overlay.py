@@ -299,10 +299,13 @@ class HUDOverlay(QWidget):
         # 8. Particle connections
         self._draw_connections(p, act, hue, sat)
 
-        # 9. Face recognition overlay
+        # 9. Profile indicator (top-right)
+        self._draw_profile_pill(p, cx, cy, hue, sat)
+
+        # 10. Face recognition overlay
         self._draw_face_overlay(p, cx, cy, act, hue, sat)
 
-        # 10. State label
+        # 11. State label
         self._draw_state_label(p, cx, cy, act, hue, sat)
 
         p.end()
@@ -470,13 +473,6 @@ class HUDOverlay(QWidget):
         fnt.setBold(True)
         p.setFont(fnt)
 
-        # Show profile name above state label if active
-        if self._profile_name:
-            profile_text = f"👤 {self._profile_name}"
-            profile_pen = QPen(self._color(hue, sat, 90, 200), 1)
-            p.setPen(profile_pen)
-            p.drawText(int(cx - 40), int(cy + 95), profile_text)
-
         p.drawText(int(cx - 50), int(cy + 110), labels[self._state])
 
     def _draw_face_overlay(self, p, cx, cy, act, hue, sat):
@@ -501,6 +497,16 @@ class HUDOverlay(QWidget):
         if self._face_confidence > 0:
             text += f" ({self._face_confidence:.0f}%)"
 
+        self._draw_pill(p, text, int(cx + 280), 20, 182, alpha)
+
+    def _draw_profile_pill(self, p, cx, cy, hue, sat):
+        """Profile indicator pill (top-right, below the face overlay)."""
+        if not self._profile_name:
+            return
+        self._draw_pill(p, f"👤 {self._profile_name}", int(cx + 280), 56, hue, 255)
+
+    def _draw_pill(self, p, text: str, x: int, y: int, hue: int, alpha: int = 255):
+        """Draw a rounded pill with glow, border, and text at (x, y)."""
         fnt = p.font()
         fnt.setPointSize(12)
         fnt.setBold(True)
@@ -510,37 +516,35 @@ class HUDOverlay(QWidget):
         metrics = p.fontMetrics()
         text_w = metrics.horizontalAdvance(text)
         pill_h = 28
-        pill_x = int(cx + 280)
-        pill_y = 20
         pill_r = 14
 
         # Glow effect
         glow_pen = QPen(
-            self._color(182, 85, 70, int(alpha * 0.4)),
+            self._color(hue, 85, 70, int(alpha * 0.4)),
             4,
         )
         glow_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(glow_pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(pill_x - 8, pill_y - 4, text_w + 16, pill_h + 8, pill_r + 4, pill_r + 4)
+        p.drawRoundedRect(x - 8, y - 4, text_w + 16, pill_h + 8, pill_r + 4, pill_r + 4)
 
         # Pill background
         pill_bg = self._color(0, 0, 0, int(alpha * 0.7))
         p.setBrush(pill_bg)
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(pill_x, pill_y, text_w, pill_h, pill_r, pill_r)
+        p.drawRoundedRect(x, y, text_w, pill_h, pill_r, pill_r)
 
         # Pill border
-        border_color = self._color(182, 85, 60, int(alpha * 0.8))
+        border_color = self._color(hue, 85, 60, int(alpha * 0.8))
         p.setPen(QPen(border_color, 1.5))
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(pill_x, pill_y, text_w, pill_h, pill_r, pill_r)
+        p.drawRoundedRect(x, y, text_w, pill_h, pill_r, pill_r)
 
         # Text
-        text_color = self._color(182, 85, 80, alpha)
+        text_color = self._color(hue, 85, 80, alpha)
         p.setPen(QPen(text_color, 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawText(pill_x + 10, pill_y + pill_h - 6, text)
+        p.drawText(x + 10, y + pill_h - 6, text)
 
     def set_face_detected(self, name: str, confidence: float = 0.0):
         """Set the currently recognized face for overlay display."""
