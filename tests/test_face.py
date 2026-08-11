@@ -179,7 +179,11 @@ class TestAddFace:
 
 
 class TestListDeleteFaces:
-    def test_list_faces_db_unavailable(self):
+    def test_list_faces_db_unavailable(self, monkeypatch):
+        # Clear DB env vars — config.py's load_dotenv() picks up ~/jarvis-pyqt/.env
+        for key in ["JARVIS_DB_HOST", "JARVIS_DB_USER", "JARVIS_DB_PASSWORD",
+                    "JARVIS_DB_NAME", "JARVIS_DB_PORT"]:
+            monkeypatch.delenv(key, raising=False)
         rec = FaceRecognizer(FaceConfig(db_host=None))
         assert rec.list_faces() == []
 

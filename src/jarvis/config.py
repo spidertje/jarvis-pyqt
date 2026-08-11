@@ -78,8 +78,39 @@ def _keychain_update_secret(service: str, value: str) -> None:
     _keychain_store_secret(service, value)
 
 
+# Values that must never be written to keychain/.env — placeholder junk from
+# template experiments that silently breaks auth. See jarvis-pyqt skill.
+_PLACEHOLDER_SECRETS = {
+    "my-api-key",
+    "my-secret-pass",
+    "changeme",
+    "change-me",
+    "password",
+    "secret",
+    "***",
+    "***REDACTED***",
+    "",
+}
+
+
+def _is_placeholder(value: str | None) -> bool:
+    """True if a secret looks like a placeholder rather than a real credential."""
+    if value is None:
+        return True
+    v = value.strip().lower()
+    if v in _PLACEHOLDER_SECRETS:
+        return True
+    # Suspiciously short values (real gateway keys are 40+ chars, db pw 10+)
+    if len(value.strip()) < 8:
+        return True
+    return False
+
+
 def _keychain_retrieve_secret(service: str) -> str | None:
-    """Retrieve a secret value from the macOS Keychain."""
+    """Retrieve a secret value from the macOS Keychain.
+
+    Returns None for placeholder values — they must never shadow real config.
+    """
     svc = _KEYCHAIN_SERVICES.get(service, service)
     try:
         result = subprocess.run(
@@ -95,9 +126,14 @@ def _keychain_retrieve_secret(service: str) -> str | None:
             check=True,
         )
         pw = result.stdout.strip()
-        if pw:
+        if pw and not _is_placeholder(pw):
             logger.debug(f"Retrieved {service} from macOS Keychain")
             return pw
+        if pw:
+            logger.warning(
+                f"Ignoring placeholder {service} in macOS Keychain "
+                f"(env/.env wins)"
+            )
         return None
     except subprocess.CalledProcessError:
         logger.debug(f"No {service} found in macOS Keychain")
@@ -257,11 +293,15 @@ class AppConfig:
                 logger.warning(f"Failed to load config file {config_file}: {e}")
         else:
             logger.info("No config file found, using defaults + env vars")
-        # Keychain always wins for secret fields, overriding stale .env values
+        # Keychain is a FALLBACK only — it must never override explicitly-set
+        # env/.env values (a stale keychain entry used to shadow the real key,
+        # causing recurring 401s). Only fill secrets that are still empty.
         for secret in cls._SECRET_FIELDS:
-            keychain_val = _keychain_retrieve_secret(secret)
-            if keychain_val:
-                setattr(cfg, secret, keychain_val)
+            current = getattr(cfg, secret)
+            if not current or _is_placeholder(current):
+                keychain_val = _keychain_retrieve_secret(secret)
+                if keychain_val and not _is_placeholder(keychain_val):
+                    setattr(cfg, secret, keychain_val)
         return cfg
 
     def save(self) -> None:
@@ -276,10 +316,11 @@ class AppConfig:
             fd = os.open(config_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w") as f:
                 json.dump(data, f, indent=2)
-            # Store secrets in macOS Keychain (if non-empty)
+            # Store secrets in macOS Keychain (only real values — never
+            # placeholders, otherwise a stale memory value poisons the chain)
             for secret in self._SECRET_FIELDS:
                 val = getattr(self, secret)
-                if val:
+                if val and not _is_placeholder(val):
                     _keychain_update_secret(secret, val)
             # Also write secrets to .env file as a fallback for auto-login
             _save_secrets_env_file(self)
@@ -298,14 +339,29 @@ _ENV_SECRET_KEYS = {
 
 
 def _save_secrets_env_file(cfg: "AppConfig") -> None:
-    """Write non-empty secrets to .env file so they survive Keychain failures."""
+    """Write non-empty, real secrets to .env file so they survive Keychain failures.
+
+    Merges with the existing file: keeps lines for keys not being updated, so
+    a save with an empty in-memory secret never truncates away stored values.
+    """
     env_path = _config_dir() / ".env"
     try:
-        lines = []
+        # Read existing lines (preserve unrelated keys)
+        existing: dict[str, str] = {}
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    existing[k.strip()] = v.strip().strip('"').strip("'")
+
+        # Overlay current non-placeholder values
         for field, env_key in _ENV_SECRET_KEYS.items():
             val = getattr(cfg, field, None)
-            if val:
-                lines.append(f'{env_key}="{val}"')
+            if val and not _is_placeholder(val):
+                existing[env_key] = val
+
+        lines = [f'{k}="{v}"' for k, v in existing.items()]
         env_path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(env_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:

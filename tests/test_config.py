@@ -141,9 +141,31 @@ class TestAppConfigPersist:
         assert cfg.palette_index == 5
 
     def test_save_stores_secrets_in_keychain(self, tmp_path, monkeypatch):
-        """save() should store secrets in Keychain when non-empty."""
+        """save() should store non-placeholder secrets in Keychain when non-empty."""
         monkeypatch.setattr("jarvis.config._config_dir", lambda: tmp_path)
         # Prevent .env file creation to isolate Keychain behavior
+        monkeypatch.setattr("jarvis.config._save_secrets_env_file", lambda cfg: None)
+        stored = {}
+
+        def fake_update(service, value):
+            stored[service] = value
+
+        monkeypatch.setattr("jarvis.config._keychain_update_secret", fake_update)
+        monkeypatch.setattr("jarvis.config._keychain_retrieve_secret", lambda s: None)
+
+        cfg = AppConfig()
+        cfg.db_password = "rocklobster"
+        cfg.llm_api_key = "freellmapi-0d9e3106805c5ef86625a1a4256b96ca20e494f775ace34f"
+        cfg.save()
+
+        assert stored == {
+            "db_password": "rocklobster",
+            "llm_api_key": "freellmapi-0d9e3106805c5ef86625a1a4256b96ca20e494f775ace34f",
+        }
+
+    def test_save_skips_placeholder_secrets_in_keychain(self, tmp_path, monkeypatch):
+        """save() must never write placeholder values (my-api-key etc.) to Keychain."""
+        monkeypatch.setattr("jarvis.config._config_dir", lambda: tmp_path)
         monkeypatch.setattr("jarvis.config._save_secrets_env_file", lambda cfg: None)
         stored = {}
 
@@ -158,7 +180,7 @@ class TestAppConfigPersist:
         cfg.llm_api_key = "my-api-key"
         cfg.save()
 
-        assert stored == {"db_password": "my-secret-pass", "llm_api_key": "my-api-key"}
+        assert stored == {}
 
     def test_load_restores_secrets_from_keychain(self, tmp_path, monkeypatch):
         """load() should restore secrets from Keychain when file has redacted values."""
@@ -173,14 +195,14 @@ class TestAppConfigPersist:
         cfg = AppConfig()
         cfg.db_host = "192.168.55.41"
         cfg.db_user = "root"
-        cfg.db_password = "my-secret-pass"
-        cfg.llm_api_key = "my-api-key"
+        cfg.db_password = "rocklobster"
+        cfg.llm_api_key = "freellmapi-0d9e3106805c5ef86625a1a4256b96ca20e494f775ace34f"
         cfg.save()
 
         # Now mock Keychain to return the secrets
         keychain_secrets = {
-            "db_password": "my-secret-pass",
-            "llm_api_key": "my-api-key",
+            "db_password": "rocklobster",
+            "llm_api_key": "freellmapi-0d9e3106805c5ef86625a1a4256b96ca20e494f775ace34f",
         }
         monkeypatch.setattr(
             "jarvis.config._keychain_retrieve_secret",
@@ -188,8 +210,8 @@ class TestAppConfigPersist:
         )
 
         loaded = AppConfig.load()
-        assert loaded.db_password == "my-secret-pass"
-        assert loaded.llm_api_key == "my-api-key"
+        assert loaded.db_password == "rocklobster"
+        assert loaded.llm_api_key == "freellmapi-0d9e3106805c5ef86625a1a4256b96ca20e494f775ace34f"
         assert loaded.db_host == "192.168.55.41"
         assert loaded.db_user == "root"
 
@@ -205,23 +227,35 @@ class TestAppConfigPersist:
         loaded = AppConfig.load()
         assert loaded.db_password == ""
 
-    def test_load_keychain_wins_over_stale_env(self, tmp_path, monkeypatch):
-        """Keychain secrets should override stale .env values on load."""
+    def test_load_env_wins_over_stale_keychain(self, tmp_path, monkeypatch):
+        """Explicit env vars must beat stale Keychain values on load."""
         monkeypatch.setattr("jarvis.config._config_dir", lambda: tmp_path)
-        # Clean env
-        for key in ["JARVIS_DB_PASSWORD", "JARVIS_LLM_API_KEY"]:
-            monkeypatch.delenv(key, raising=False)
+        # Set a REAL env var (not a placeholder)
+        monkeypatch.setenv("JARVIS_DB_PASSWORD", "env-pass-123")
+        monkeypatch.setenv("JARVIS_LLM_API_KEY", "env-key-12345")
 
-        # Write a .env with a stale password
-        env_file = tmp_path / ".env"
-        env_file.write_text('JARVIS_DB_PASSWORD="stale-pass"\nJARVIS_DB_HOST="192.168.55.41"\n')
-
-        # Mock Keychain to return the NEW password
+        # Mock Keychain to return a DIFFERENT (stale) value
         monkeypatch.setattr(
             "jarvis.config._keychain_retrieve_secret",
-            lambda s: {"db_password": "new-pass", "llm_api_key": "new-key"}.get(s),
+            lambda s: {"db_password": "stale-pass", "llm_api_key": "stale-key"}.get(s),
         )
 
         loaded = AppConfig.load()
-        assert loaded.db_password == "new-pass"
-        assert loaded.db_host == "192.168.55.41"
+        assert loaded.db_password == "env-pass-123"
+        assert loaded.llm_api_key == "env-key-12345"
+
+    def test_load_ignores_placeholder_keychain(self, tmp_path, monkeypatch):
+        """load() must ignore placeholder Keychain entries (my-api-key etc.)."""
+        monkeypatch.setattr("jarvis.config._config_dir", lambda: tmp_path)
+        for key in ["JARVIS_DB_PASSWORD", "JARVIS_LLM_API_KEY"]:
+            monkeypatch.delenv(key, raising=False)
+
+        # Keychain holds the placeholder values
+        monkeypatch.setattr(
+            "jarvis.config._keychain_retrieve_secret",
+            lambda s: {"db_password": "my-secret-pass", "llm_api_key": "my-api-key"}.get(s),
+        )
+
+        loaded = AppConfig.load()
+        assert loaded.db_password == ""
+        assert loaded.llm_api_key == ""
