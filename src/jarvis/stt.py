@@ -16,6 +16,7 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -46,7 +47,7 @@ class WhisperSTT:
     async def connect(self, timeout: float = 5.0) -> bool:
         """Connect to faster-whisper via Wyoming protocol."""
         try:
-            self._reader, self._writer = await asyncio.wait_for(
+            reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(self.config.host, self.config.port),
                 timeout=timeout,
             )
@@ -59,9 +60,12 @@ class WhisperSTT:
             logger.error(f"Failed to connect to faster-whisper: {e}")
             return False
 
+        self._reader = reader
+        self._writer = writer
+
         # Wyoming protocol: send hello and wait for server hello
         self._send_event("hello", {"protocol_version": 0})
-        await self._writer.drain()
+        await writer.drain()
 
         # Read server hello
         try:
@@ -262,9 +266,11 @@ class WhisperSTT:
             logger.info(f"Auto-selected input device {best_device} (RMS={best_rms:.2f})")
         return best_device
 
-    def _send_event(self, event_type: str, data: dict = None, payload: bytes = None):
+    def _send_event(self, event_type: str, data: dict | None = None, payload: bytes | None = None):
         """Send a Wyoming protocol event (JSON header + optional data/payload)."""
-        event = {"type": event_type, "version": "1.10.0"}
+        if self._writer is None:
+            return
+        event: dict[str, Any] = {"type": event_type, "version": "1.10.0"}
         data_bytes = b""
         if data:
             data_bytes = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -284,6 +290,8 @@ class WhisperSTT:
 
     async def _read_event(self) -> dict:
         """Read a Wyoming protocol event (JSON header + optional data/payload)."""
+        if self._reader is None:
+            return {}
         line = await self._reader.readline()
         if not line:
             return {}
@@ -317,7 +325,7 @@ class WhisperSTT:
         try:
             return await self._do_transcribe(audio_data)
 
-        except (ConnectionError, asyncio.ConnectionError, asyncio.IncompleteReadError) as e:
+        except (ConnectionError, asyncio.IncompleteReadError) as e:
             logger.warning(f"STT connection error: {e} — will reconnect on next call")
             self._connected = False
             # Try reconnecting and retrying once
@@ -334,6 +342,9 @@ class WhisperSTT:
 
     async def _do_transcribe(self, audio_data: bytes) -> str | None:
         """Send audio data and read back the transcript."""
+        if self._writer is None or self._reader is None:
+            return None
+        writer = self._writer
         # Send transcribe request with audio format metadata
         self._send_event(
             "transcribe",
@@ -343,7 +354,7 @@ class WhisperSTT:
                 "channels": self.config.channels,
             },
         )
-        await self._writer.drain()
+        await writer.drain()
 
         # Send audio chunks with format metadata in data + raw audio as payload
         chunk_size = 3200  # ~100ms at 16kHz 16-bit mono
@@ -361,11 +372,11 @@ class WhisperSTT:
                 payload=chunk,
             )
             timestamp += len(chunk) // (self.config.width * self.config.channels)
-            await self._writer.drain()
+            await writer.drain()
 
         # Send audio-stop to signal end of stream
         self._send_event("audio-stop", {"timestamp": timestamp})
-        await self._writer.drain()
+        await writer.drain()
 
         # Read transcript
         text = None

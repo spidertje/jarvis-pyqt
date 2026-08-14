@@ -78,9 +78,9 @@ class FaceRecognizer:
         self._models: dict[str, cv2.face.LBPHFaceRecognizer] = {}
         self._last_recognition: dict[str, float] = {}  # name -> last recognition time
         self._vote_buffers: dict[str, list[bool]] = {}  # name -> recent hit/miss window
-        self._db = None
-        self._cascade = None
-        self._net = None
+        self._db: pymysql.Connection | None = None
+        self._cascade: cv2.CascadeClassifier | None = None
+        self._net: object | None = None
         self._last_db_error: str | None = None
         self._last_sample_error: str | None = None
 
@@ -92,7 +92,7 @@ class FaceRecognizer:
                     "DB host and user must be configured via env vars "
                     "(JARVIS_DB_HOST, JARVIS_DB_USER) or FaceConfig"
                 )
-            self._db = pymysql.connect(
+            db = pymysql.connect(
                 host=self.config.db_host,
                 port=self.config.db_port,
                 user=self.config.db_user,
@@ -101,7 +101,7 @@ class FaceRecognizer:
                 cursorclass=pymysql.cursors.DictCursor,
             )
             # Ensure face tables exist (idempotent)
-            with self._db.cursor() as cur:
+            with db.cursor() as cur:
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS face_samples (
@@ -121,17 +121,18 @@ class FaceRecognizer:
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                     """
                 )
-            self._db.commit()
+            db.commit()
+            self._db = db
         return self._db
 
-    def _get_cascade(self) -> cv2.CascadeClassifier:
+    def _get_cascade(self) -> cv2.CascadeClassifier | None:
         """Get or create Haar cascade classifier."""
         if self._cascade is None:
             path = self.config.cascade_path
             if path is None:
                 # Try common paths
                 candidates = [
-                    cv2.data.haarcascades + "haarcascade_frontalface_default.xml",
+                    cv2.data.haarcascades + "haarcascade_frontalface_default.xml",  # type: ignore[attr-defined]
                     os.path.expanduser("~/.hermes/haarcascade_frontalface_default.xml"),
                 ]
                 for candidate in candidates:
@@ -209,7 +210,7 @@ class FaceRecognizer:
                 f.write(blob)
                 temp_path = f.name
 
-            model = cv2.face.LBPHFaceRecognizer_create()
+            model = cv2.face.LBPHFaceRecognizer_create()  # type: ignore[attr-defined]
             model.read(temp_path)
             os.unlink(temp_path)
             return model
@@ -221,7 +222,7 @@ class FaceRecognizer:
                     f.write(blob)
                     temp_path = f.name
 
-                model = cv2.face.LBPHFaceRecognizer_create()
+                model = cv2.face.LBPHFaceRecognizer_create()  # type: ignore[attr-defined]
                 model.read(temp_path)
                 os.unlink(temp_path)
                 return model
@@ -269,9 +270,12 @@ class FaceRecognizer:
                 # Apply Non-Maximum Suppression to remove overlapping detections
                 if nms_boxes:
                     indices = cv2.dnn.NMSBoxes(nms_boxes, nms_scores,
-                                              self.config.dnn_score_threshold, 0.3)
+                                                self.config.dnn_score_threshold, 0.3)
+                    # NMSBox returns differ across OpenCV versions (ndarray,
+                    # tuple-of-tuples, etc.) — normalize to a flat list of ints.
+                    indices = np.array(indices).flatten().astype(int).tolist()
                     faces = []
-                    for idx in indices.flatten():
+                    for idx in indices:
                         x1, y1, x2, y2 = nms_boxes[idx]
                         faces.append((x1, y1, x2 - x1, y2 - y1))
                     return faces
@@ -280,16 +284,16 @@ class FaceRecognizer:
                 logger.warning(f"ONNX face detection failed: {e}, falling back to Haar")
         # Fallback to Haar cascade
         cascade = self._get_cascade()
-        if cascade.empty():
+        if cascade is None or cascade.empty():
             return []
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = cascade.detectMultiScale(
+        haar_faces = cascade.detectMultiScale(
             gray,
             scaleFactor=1.05,
             minNeighbors=6,
             minSize=(40, 40),
         )
-        return [tuple(face) for face in faces]
+        return [(int(x), int(y), int(w), int(h)) for x, y, w, h in haar_faces]
 
     def recognize(self, frame: np.ndarray) -> tuple[str, float] | None:
         """
@@ -515,7 +519,7 @@ class FaceRecognizer:
                 return False
 
             logger.info(f"Retraining model for {name} with {len(samples)} samples")
-            new_model = cv2.face.LBPHFaceRecognizer_create()
+            new_model = cv2.face.LBPHFaceRecognizer_create()  # type: ignore[attr-defined]
             new_model.train(samples, np.array(labels))
 
             # Save to DB
@@ -535,7 +539,7 @@ class FaceRecognizer:
 
     def maybe_retrain(self, name: str) -> bool:
         """Retrain if enough new samples have accumulated since last training.
-        
+
         Returns True if retrained, False otherwise.
         """
         count = self._get_sample_count(name)
@@ -578,7 +582,7 @@ class FaceRecognizer:
                 return False
 
             logger.info(f"Training new model for {name} with {len(samples)} samples")
-            new_model = cv2.face.LBPHFaceRecognizer_create()
+            new_model = cv2.face.LBPHFaceRecognizer_create()  # type: ignore[attr-defined]
             new_model.train(samples, np.array(labels))
 
             model_blob = self._save_model_blob(new_model)

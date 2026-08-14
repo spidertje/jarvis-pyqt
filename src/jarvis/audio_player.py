@@ -40,7 +40,8 @@ class AudioPlayer:
 
             self._sd = sd
             devices = sd.query_devices()
-            dev_index = self.config.device if self.config.device is not None else 0
+            # Handle -1 as default device (None)
+            dev_index = self.config.device if self.config.device is not None and self.config.device >= 0 else 0
             dev_name = devices[dev_index]["name"]
             logger.info(f"Audio device: {dev_name}")
         except ImportError:

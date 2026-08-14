@@ -63,6 +63,25 @@ class TestSettingsDialogGetValues:
         values = settings._get_values()
         assert isinstance(values["face_threshold"], float)
 
+    def test_get_values_tts_voice_no_leading_spaces(self, settings):
+        """_get_values should return a clean voice name without leading/trailing whitespace."""
+        values = settings._get_values()
+        voice = values["tts_voice"]
+        assert voice == voice.strip()
+        assert "en_US" in voice or voice == "en_US-lessac-medium"
+
+    def test_get_values_tts_voice_updates_after_selection(self, settings):
+        """_get_values should return the selected voice name, not the display text with prefix."""
+        # Find and select "en_US-amy-medium"
+        for i in range(settings.voice_combo.count()):
+            data = settings.voice_combo.itemData(i)
+            if isinstance(data, dict) and data.get("type") == "voice" and data.get("name") == "en_US-amy-medium":
+                settings.voice_combo.setCurrentIndex(i)
+                break
+        values = settings._get_values()
+        assert values["tts_voice"] == "en_US-amy-medium"
+        assert values["tts_voice"] == values["tts_voice"].strip()
+
 
 class TestSettingsDialogRestartFace:
     @patch("jarvis.settings.QMessageBox")
@@ -124,6 +143,32 @@ class TestSettingsDialogSave:
         # Config file should have been created
         config_path = tmp_path / "config.json"
         assert config_path.exists()
+
+    @patch("jarvis.settings.QMessageBox")
+    def test_save_applies_voice_to_tts(self, mock_msgbox, settings):
+        """_save_settings should set the selected voice on the agent's TTS object."""
+        # Select a voice
+        for i in range(settings.voice_combo.count()):
+            data = settings.voice_combo.itemData(i)
+            if isinstance(data, dict) and data.get("type") == "voice" and data.get("name") == "en_US-amy-medium":
+                settings.voice_combo.setCurrentIndex(i)
+                break
+        settings._save_settings()
+        assert settings.agent.tts.voice == "en_US-amy-medium"
+        assert settings.agent_config.tts.voice == "en_US-amy-medium"
+
+    @patch("jarvis.settings.QMessageBox")
+    def test_save_persists_voice_in_app_config(self, mock_msgbox, settings, tmp_path, monkeypatch):
+        """_save_settings should persist the selected voice to app_config."""
+        monkeypatch.setattr("jarvis.config._config_dir", lambda: tmp_path)
+        # Select a voice
+        for i in range(settings.voice_combo.count()):
+            data = settings.voice_combo.itemData(i)
+            if isinstance(data, dict) and data.get("type") == "voice" and data.get("name") == "en_US-amy-medium":
+                settings.voice_combo.setCurrentIndex(i)
+                break
+        settings._save_settings()
+        assert settings.app_config.tts_voice == "en_US-amy-medium"
 
 
 class TestSettingsDialogTabs:

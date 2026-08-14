@@ -19,11 +19,12 @@ CREATE TABLE IF NOT EXISTS profiles (
     assistant_full TEXT NOT NULL DEFAULT '',
     system_prompt TEXT NOT NULL DEFAULT 'You are Jarvis, a helpful AI assistant.',
     chat_history JSON NOT NULL DEFAULT '[]',
-    accent_hue INT NOT NULL DEFAULT 182,
-    palette VARCHAR(50) NOT NULL DEFAULT 'cyan',
-    is_default BOOLEAN NOT NULL DEFAULT FALSE,
-    enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+     accent_hue INT NOT NULL DEFAULT 182,
+     palette VARCHAR(50) NOT NULL DEFAULT 'cyan',
+     is_default BOOLEAN NOT NULL DEFAULT FALSE,
+     enabled BOOLEAN NOT NULL DEFAULT TRUE,
+     api_key VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Reserved for web frontend; PyQt inserts empty string',
+     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 

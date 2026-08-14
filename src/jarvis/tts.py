@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -94,15 +95,19 @@ class PiperTTS:
         await self.disconnect()
         return await self.connect(timeout)
 
-    def _send_event(self, event_type: str, data: dict = None):
+    def _send_event(self, event_type: str, data: dict | None = None):
         """Send a Wyoming protocol event."""
-        event = {"type": event_type}
+        if self._writer is None:
+            return
+        event: dict[str, Any] = {"type": event_type}
         if data:
             event["data"] = data
         self._writer.write(json.dumps(event).encode() + b"\n")
 
     async def _read_event(self) -> dict:
         """Read a Wyoming protocol event (JSON line)."""
+        if self._reader is None:
+            return {}
         line = await self._reader.readline()
         if not line:
             return {}
@@ -139,13 +144,17 @@ class PiperTTS:
         voice_changed = self.voice != self._prev_voice
         if voice_changed:
             logger.info(f"TTS voice changed: {self._prev_voice} → {self.voice}")
-            await self.reconnect()
+            if not await self.reconnect():
+                return None
         elif not await self._ensure_connected():
+            return None
+
+        if self._writer is None or self._reader is None:
             return None
 
         try:
             # Send synthesize request
-            self._send_event("synthesize", {"text": text, "voice": self.voice})
+            self._send_event("synthesize", {"text": text, "voice": {"name": self.voice}} if self.voice else {"text": text})
             await self._writer.drain()
 
             # Read audio-start
@@ -180,7 +189,7 @@ class PiperTTS:
 
             return b"".join(audio_chunks) if audio_chunks else None
 
-        except (ConnectionError, asyncio.ConnectionError, asyncio.IncompleteReadError) as e:
+        except (ConnectionError, asyncio.IncompleteReadError) as e:
             logger.warning(f"TTS connection error: {e} — will reconnect on next call")
             self._connected = False
             return None

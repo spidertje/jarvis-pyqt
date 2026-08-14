@@ -227,10 +227,12 @@ class ProfileManager:
     def save(self, profile: Profile) -> bool:
         """Save a profile to DB (upsert).
 
-        ponytail: writes only columns present in the live web-frontend schema
-        (accent_hue/enabled/system_prompt aren't columns there; they map to
-        palette/assistant_full). chat_history guarded separately since older
-        tables lack it.
+        Writes the columns the PyQt codepath manages: name, assistant_name,
+        assistant_full (mapped from system_prompt since the web schema has no
+        system_prompt column), palette (derived from accent_hue), accent_hue,
+        chat_history, face_name, and api_key (empty placeholder — the key is
+        owned by the web frontend, not the PyQt client). accent_hue is persisted
+        explicitly so round-trips don't collapse every hue to the 182 default.
         """
         try:
             db = self._get_db()
@@ -242,12 +244,13 @@ class ProfileManager:
                     (
                         "INSERT INTO profiles "
                         "(name, assistant_name, assistant_full, "
-                        "palette, chat_history, face_name, api_key) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                        "palette, accent_hue, chat_history, face_name, api_key) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
                         "ON DUPLICATE KEY UPDATE "
                         "assistant_name=VALUES(assistant_name), "
                         "assistant_full=VALUES(assistant_full), "
                         "palette=VALUES(palette), "
+                        "accent_hue=VALUES(accent_hue), "
                         "chat_history=VALUES(chat_history), "
                         "face_name=VALUES(face_name)"
                     ),
@@ -256,6 +259,7 @@ class ProfileManager:
                         profile.assistant_name,
                         profile.system_prompt,
                         palette,
+                        profile.accent_hue,
                         json.dumps(profile.chat_history),
                         profile.face_name,
                         "",  # api_key NOT-NULL — not used by PyQt profiles

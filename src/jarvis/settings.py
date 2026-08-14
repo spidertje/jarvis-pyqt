@@ -6,8 +6,6 @@ import logging
 from collections.abc import Callable
 
 from PyQt6.QtCore import Qt
-
-logger = logging.getLogger(__name__)
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -29,6 +27,7 @@ from PyQt6.QtWidgets import (
 
 from jarvis.face import FaceConfig
 
+logger = logging.getLogger(__name__)
 
 class SettingsDialog(QDialog):
     """Settings/preferences dialog for Jarvis configuration."""
@@ -374,7 +373,7 @@ class SettingsDialog(QDialog):
         if not config:
             return QWidget()
 
-        group = self._make_group("Text-to-Speech (Piper)", "🔊")
+        group = self._make_group("Text-to-Speech (Piper)", "���������🔊")
         layout = QVBoxLayout(group)
 
         # Host
@@ -403,11 +402,16 @@ class SettingsDialog(QDialog):
         layout.addWidget(port_label)
         layout.addWidget(self.tts_port_spin)
 
-        # Voice model (readonly, default used)
-        self.voice_field = QLineEdit("en_US-lessac-medium")
-        self.voice_field.setReadOnly(True)
-        self.voice_field.setStyleSheet("""
-            QLineEdit {
+        # Voice selector dropdown
+        voice_layout = QVBoxLayout()
+        voice_label = QLabel("Voice Model:")
+        voice_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        voice_layout.addWidget(voice_label)
+
+        self.voice_combo = QComboBox()
+        self.voice_combo.setFixedHeight(30)
+        self.voice_combo.setStyleSheet("""
+            QComboBox {
                 background: rgba(0, 0, 0, 60);
                 border: 1px solid rgba(0, 200, 255, 80);
                 border-radius: 4px;
@@ -415,16 +419,172 @@ class SettingsDialog(QDialog):
                 color: #e0e0e0;
                 font-size: 13px;
             }
+            QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right; width: 20px; }
+            QComboBox QAbstractItemView {
+                background: rgba(0, 0, 0, 80);
+                selection-background-color: rgba(0, 200, 255, 150);
+            }
         """)
-        voice_label = QLabel("Voice Model (readonly, default):")
-        voice_label.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
-        layout.addWidget(voice_label)
-        layout.addWidget(self.voice_field)
+        voice_layout.addWidget(self.voice_combo)
+        layout.addLayout(voice_layout)
 
-        # Piper voice selector removed per user request
+        # Populate voice combobox with common voices
+        self._populate_voice_combo_simple()
 
         layout.addStretch()
         return group
+
+    def _populate_voice_combo_simple(self):
+        """Populate voice combo box with common voices."""
+        # Clear existing items
+        self.voice_combo.clear()
+        
+        # Add common voices grouped by language for better UX
+        voice_groups = {
+            "English (US)": [
+                "en_US-lessac-low",
+                "en_US-lessac-medium", 
+                "en_US-lessac-high",
+                "en_US-amy-low",
+                "en_US-amy-medium",
+                "en_US-joe-medium",
+                "en_US-john-medium",
+                "en_US-bryce-medium",
+                "en_US-kathleen-low",
+                "en_US-kristin-medium",
+                "en_US-kusal-medium",
+                "en_US-l2arctic-medium",
+                "en_US-ryan-medium",
+                "en_US-ryan-high",
+                "en_US-ryan-low",
+                "en_US-hfc_male-medium",
+                "en_US-hfc_female-medium"
+            ],
+            "English (GB)": [
+                "en_GB-alan-low",
+                "en_GB-alan-medium",
+                "en_GB-alba-medium",
+                "en_GB-aru-medium",
+                "en_GB-cori-high",
+                "en_GB-cori-medium",
+                "en_GB-jenny_dioco-medium",
+                "en_GB-northern_english_male-medium",
+                "en_GB-semaine-medium",
+                "en_GB-southern_english_female-low",
+                "en_GB-vctk-medium",
+                "en_GB-southern_english_male-medium"
+            ],
+            "French": [
+                "fr_FR-mls-medium",
+                "fr_FR-tom-medium",
+                "fr_FR-upmc-medium",
+                "fr_FR-gilles-low",
+                "fr_FR-siwis-medium"
+            ],
+            "German": [
+                "de_DE-karlsson-medium",
+                "de_DE-kessler-medium",
+                "de_DE-eva_k-medium",
+                "de_DE-kerstin-medium",
+                "de_DE-david-medium"
+            ],
+            "Spanish": [
+                "es_ES-sharvard-medium",
+                "es_ES-mls_9972-medium",
+                "es_ES-mls-medium",
+                "es_ES-mls_10246-medium",
+                "es_ES-davefx-medium",
+                "es_ES-carlfm-medium",
+                "es_ES-mls_1840-medium"
+            ],
+            "Dutch": [
+                "nl_BE-nathalie-medium",
+                "nl_NL-alex-medium",
+                "nl_NL-mls-medium",
+                "nl_NL-ronnie-medium",
+                "nl_NL-pim-medium"
+            ],
+            "Italian": [
+                "it_IT-paola-medium",
+                "it_IT-silva-medium",
+                "it_IT-riccardo-medium",
+                "it_IT-serena-medium"
+            ],
+            "Portuguese": [
+                "pt_BR-faber-medium",
+                "pt_BR-cadu-medium",
+                "pt_BR-edresson-low",
+                "pt_PT-tugão-medium"
+            ],
+            "Russian": [
+                "ru_RU-irina-medium",
+                "ru_RU-dmitri-medium",
+                "ru_RU-ruslan-medium",
+                "ru_RU-klava-medium"
+            ],
+            "Ukrainian": [
+                "uk_UA-lada-medium",
+                "uk_UA-oleksa-medium",
+                "uk_UA-mykhailo-medium",
+                "uk_UA-viktoriia-medium"
+            ],
+            "Chinese": [
+                "zh_CN-huayan-medium",
+                "zh_CN-chaowen-medium",
+                "zh_CN-xiao_ya-medium",
+                "zh_CN-xiao_xiong-medium"
+            ],
+            "Japanese": [
+                "ja_JP-nanako-medium",
+                "ja_JP-nanako-high",
+                "ja_JP-nanako-low"
+            ],
+            "Polish": [
+                "pl_PL-mc_speech-medium",
+                "pl_PL-gosia-medium",
+                "pl_PL-darkman-medium",
+                "pl_PL-bass-medium"
+            ]
+        }
+        
+        # Add voice groups as sections
+        for language, voices in voice_groups.items():
+            # Add language header
+            self.voice_combo.addItem(f"--- {language} ---")
+            self.voice_combo.setItemData(self.voice_combo.count() - 1, 
+                                       {"type": "header", "language": language})
+            
+            # Add voices in this language
+            for voice in voices:
+                self.voice_combo.addItem(f"  {voice}")
+                self.voice_combo.setItemData(self.voice_combo.count() - 1, 
+                                           {"type": "voice", "name": voice})
+        
+        # Set current voice
+        current_voice = getattr(self.agent_config, "tts_voice", "en_US-lessac-medium") if self.agent_config else "en_US-lessac-medium"
+        index = self.voice_combo.findText(current_voice)
+        if index < 0:
+            # Try with prefix (voices are indented with 2 spaces)
+            index = self.voice_combo.findText(f"  {current_voice}")
+        if index >= 0:
+            self.voice_combo.setCurrentIndex(index)
+            
+        # Connect signal
+        self.voice_combo.currentIndexChanged.connect(self._on_voice_changed)
+
+    def _on_voice_changed(self, index: int):
+        """Called when voice selection changes."""
+        if index < 0:
+            return
+        data = self.voice_combo.itemData(index)
+        if isinstance(data, dict) and data.get("type") == "voice":
+            voice_name = data.get("name")
+            if voice_name and self.agent_config:
+                self.agent_config.tts_voice = voice_name
+                # Update the agent's TTS object immediately
+                if self.agent and hasattr(self.agent, "tts"):
+                    self.agent.tts.voice = voice_name
+                logger.info(f"TTS voice changed to: {voice_name}")
 
     def _build_audio_tab(self):
         """Audio output configuration tab."""
@@ -626,12 +786,16 @@ class SettingsDialog(QDialog):
         stt_port = self.stt_port_spin.value() if hasattr(self, "stt_port_spin") else 10300
         stt_device = self.stt_device_spin.value() if hasattr(self, "stt_device_spin") else -1
 
-        # TTS: host (widget[0]), port (self.tts_port_spin), voice (self.voice_field)
+        # TTS: host (widget[0]), port (self.tts_port_spin), voice (self.voice_combo)
         tts_group = self.tabs.widget(2)
         tts_widgets = self._get_qlineedits(tts_group)
         tts_host = tts_widgets[0].text() if len(tts_widgets) > 0 else ""
         tts_port = self.tts_port_spin.value() if hasattr(self, "tts_port_spin") else 10200
-        tts_voice = self.voice_field.text().strip()
+        tts_voice = ""
+        if hasattr(self, "voice_combo"):
+            data = self.voice_combo.itemData(self.voice_combo.currentIndex())
+            if isinstance(data, dict) and data.get("type") == "voice":
+                tts_voice = data.get("name")
         if not tts_voice:
             tts_voice = "en_US-lessac-medium"
 
@@ -784,7 +948,11 @@ class SettingsDialog(QDialog):
                 color: #e0e0e0;
                 font-size: 13px;
             }
-            QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right; width: 20px; }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 20px;
+            }
             QComboBox QAbstractItemView {
                 background: rgba(0, 0, 0, 80);
                 selection-background-color: rgba(0, 200, 255, 150);

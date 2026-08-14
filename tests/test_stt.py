@@ -63,3 +63,22 @@ class TestWhisperSTT:
         assert stt._connected is False
         assert stt._reader is None
         assert stt._writer is None
+
+    @pytest.mark.asyncio
+    async def test_do_transcribe_returns_none_when_not_connected(self):
+        """_do_transcribe must bail safely when writer/reader are None."""
+        stt = WhisperSTT()
+        stt._writer = None
+        stt._reader = None
+        result = await stt._do_transcribe(b"\x00\x00")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_transcribe_returns_none_when_connection_fails(self):
+        """transcribe should return None (not raise) if it cannot connect."""
+        stt = WhisperSTT()
+        stt._writer = None
+        stt._reader = None
+        with patch.object(stt, "connect", new_callable=AsyncMock, return_value=False):
+            result = await stt.transcribe(b"\x00\x00")
+        assert result is None
