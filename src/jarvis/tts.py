@@ -153,42 +153,7 @@ class PiperTTS:
             return None
 
         try:
-            # Send synthesize request
-            self._send_event("synthesize", {"text": text, "voice": {"name": self.voice}} if self.voice else {"text": text})
-            await self._writer.drain()
-
-            # Read audio-start
-            event = await self._read_event()
-            if event.get("type") != "audio-start":
-                logger.error(f"Expected audio-start, got: {event}")
-                return None
-
-            # Read additional data from audio-start
-            data_length = event.get("data_length", 0)
-            if data_length > 0:
-                await self._reader.readexactly(data_length)
-
-            # Read audio chunks with payload
-            audio_chunks = []
-            while True:
-                event = await self._read_event()
-
-                # Read additional data
-                data_length = event.get("data_length", 0)
-                if data_length > 0:
-                    await self._reader.readexactly(data_length)
-
-                # Read payload (binary PCM)
-                payload_length = event.get("payload_length", 0)
-                if payload_length > 0:
-                    payload = await self._reader.readexactly(payload_length)
-                    audio_chunks.append(payload)
-
-                if event.get("type") == "audio-stop":
-                    break
-
-            return b"".join(audio_chunks) if audio_chunks else None
-
+            return await self._synthesize(text)
         except (ConnectionError, asyncio.IncompleteReadError) as e:
             logger.warning(f"TTS connection error: {e} — will reconnect on next call")
             self._connected = False
@@ -196,3 +161,68 @@ class PiperTTS:
         except Exception as e:
             logger.error(f"Piper TTS error: {e}")
             return None
+
+    def speak_sync(self, text: str) -> bytes | None:
+        """Blocking wrapper around :meth:`speak` (for use on worker threads).
+
+        Runs the coroutine in a fresh event loop. Safe to call from any
+        thread — each call is independent.
+        """
+        import asyncio
+
+        async def _run() -> bytes | None:
+            result = await self.speak(text)
+            return result
+
+        try:
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(_run())
+            finally:
+                loop.close()
+        except Exception as e:
+            logger.error(f"Piper TTS sync error: {e}")
+            return None
+
+    async def _synthesize(self, text: str) -> bytes | None:
+        """Send a synthesize request and collect the audio payload."""
+        assert self._writer is not None and self._reader is not None
+
+        # Send synthesize request
+        self._send_event(
+            "synthesize",
+            {"text": text, "voice": {"name": self.voice}} if self.voice else {"text": text},
+        )
+        await self._writer.drain()
+
+        # Read audio-start
+        event = await self._read_event()
+        if event.get("type") != "audio-start":
+            logger.error(f"Expected audio-start, got: {event}")
+            return None
+
+        # Read additional data from audio-start
+        data_length = event.get("data_length", 0)
+        if data_length > 0:
+            await self._reader.readexactly(data_length)
+
+        # Read audio chunks with payload
+        audio_chunks: list[bytes] = []
+        while True:
+            event = await self._read_event()
+
+            # Read additional data
+            data_length = event.get("data_length", 0)
+            if data_length > 0:
+                await self._reader.readexactly(data_length)
+
+            # Read payload (binary PCM)
+            payload_length = event.get("payload_length", 0)
+            if payload_length > 0:
+                payload = await self._reader.readexactly(payload_length)
+                audio_chunks.append(payload)
+
+            if event.get("type") == "audio-stop":
+                break
+
+        return b"".join(audio_chunks) if audio_chunks else None

@@ -6,6 +6,7 @@ Uses sounddevice + numpy for playback.
 """
 
 import logging
+import threading
 from dataclasses import dataclass
 
 import numpy as np
@@ -24,13 +25,27 @@ class AudioConfig:
 
 
 class AudioPlayer:
-    """Plays raw PCM audio via sounddevice."""
+    """Plays raw PCM audio via sounddevice.
+
+    Playback is interruptible: :meth:`play` writes audio in small chunks and
+    checks the internal stop flag between chunks, so :meth:`stop` cuts output
+    within one chunk (<= ~160ms) instead of after the whole clip.
+
+    Thread-safe: playback may run on a worker thread while :meth:`stop` is
+    called from another (e.g. the barge-in audio thread). A lock guards the
+    stream lifecycle so the two can't corrupt each other.
+    """
+
+    # ~160ms of 16-bit samples at 16kHz — the max interruption latency.
+    _CHUNK_SAMPLES = 160 * 16000 // 1000
 
     def __init__(self, config: AudioConfig | None = None):
         self.config = config or AudioConfig()
         self._stream = None
         self._playing = False
         self._sd = None
+        self._stop_flag = False
+        self._lock = threading.Lock()
         self._init()
 
     def _init(self):
@@ -51,7 +66,10 @@ class AudioPlayer:
 
     def play(self, pcm_data: bytes):
         """
-        Play raw PCM audio.
+        Play raw PCM audio (interruptible).
+
+        Writes in ~160ms chunks, checking the stop flag between chunks so
+        :meth:`stop` takes effect promptly.
 
         Args:
             pcm_data: Raw PCM bytes (16-bit, mono, 16kHz)
@@ -89,39 +107,49 @@ class AudioPlayer:
             else None
         )
 
+        self._stop_flag = False
         try:
-            self._stream = self._sd.OutputStream(
-                samplerate=self.config.sample_rate,
-                channels=channels,
-                dtype="float32",
-                device=device,
-            )
-            self._stream.start()
+            with self._lock:
+                self._stream = self._sd.OutputStream(
+                    samplerate=self.config.sample_rate,
+                    channels=channels,
+                    dtype="float32",
+                    device=device,
+                )
+                self._stream.start()
             self._playing = True
 
-            self._stream.write(audio_float)
+            # Write in chunks so stop() can interrupt between chunks.
+            chunk = self._CHUNK_SAMPLES
+            for i in range(0, len(audio_float), chunk):
+                if self._stop_flag:
+                    logger.info("Audio playback interrupted by stop()")
+                    break
+                self._stream.write(audio_float[i : i + chunk])
 
-            # Wait for playback to complete
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
-            self._playing = False
+            self._cleanup_stream()
 
         except Exception as e:
             logger.error(f"Audio playback error: {e}")
             self._playing = False
-            if self._stream:
-                self._stream.stop()
-                self._stream.close()
-                self._stream = None
+            self._cleanup_stream()
+
+    def _cleanup_stream(self):
+        """Tear down the active stream (thread-safe)."""
+        with self._lock:
+            stream, self._stream = self._stream, None
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+        self._playing = False
 
     def stop(self):
-        """Stop current playback."""
-        if self._stream:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
-        self._playing = False
+        """Stop current playback (interrupts chunked writes promptly)."""
+        self._stop_flag = True
+        self._cleanup_stream()
 
     @property
     def is_playing(self) -> bool:

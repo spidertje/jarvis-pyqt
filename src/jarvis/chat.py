@@ -56,14 +56,16 @@ class ChatClient:
         messages: list[dict[str, str]],
         stream: bool = False,
         system_prompt: str | None = None,
+        on_token=None,
     ) -> str | None:
         """
         Send chat messages and get a response.
 
         Args:
             messages: List of {"role": "user"|"assistant", "content": "..."}
-            stream: If True, returns streamed token chunks via callback.
+            stream: If True, tokens are delivered via ``on_token`` as they arrive.
             system_prompt: Optional system prompt to prepend.
+            on_token: Optional callback(text_chunk) called for each streamed token.
 
         Returns:
             Complete text response, or None on failure.
@@ -84,9 +86,13 @@ class ChatClient:
 
         try:
             if stream:
-                return await self._stream_chat(session, payload)
-            else:
-                return await self._nonstream_chat(session, payload)
+                result = await self._stream_chat(session, payload, on_token=on_token)
+                if result is not None:
+                    return result
+                # Endpoint ignored `stream` (or sent nothing) — fall back to one-shot
+                logger.info("Stream returned nothing — falling back to non-streaming")
+                return await self._nonstream_chat(session, {**payload, "stream": False})
+            return await self._nonstream_chat(session, payload)
         except Exception as e:
             logger.error(f"Chat error: {e}")
             return None
@@ -112,16 +118,19 @@ class ChatClient:
         on_token=None,
     ) -> str | None:
         """
-        Stream tokens from the API.
+        Stream tokens from the API (SSE ``data:`` chunks).
 
         Args:
             on_token: Optional callback(text_chunk) for each token.
+
+        Returns:
+            Full response text, or None if no tokens were received.
         """
         if not self.config.base_url:
             logger.error("No LLM base_url configured")
             return None
-        payload["stream"] = True
-        chunks = []
+        payload = {**payload, "stream": True}
+        chunks: list[str] = []
         url = f"{self.config.base_url}/chat/completions"
         async with session.post(url, json=payload) as resp:
             if resp.status != 200:
@@ -130,9 +139,13 @@ class ChatClient:
                 return None
             async for line in resp.content:
                 line = line.strip()
-                if not line or not line.startswith(b"data: "):
+                if not line:
                     continue
-                data_str = line[6:].decode("utf-8")
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", "replace")
+                if not line.startswith("data:"):
+                    continue
+                data_str = line[len("data:"):].strip()
                 if data_str == "[DONE]":
                     break
                 try:
@@ -145,4 +158,4 @@ class ChatClient:
                             on_token(token)
                 except (json.JSONDecodeError, KeyError, IndexError):
                     continue
-        return "".join(chunks)
+        return "".join(chunks) if chunks else None

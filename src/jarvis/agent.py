@@ -8,15 +8,19 @@ State machine:
     SPEAKING → IDLE (done speaking)
 """
 
+import asyncio
 import logging
 import os
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from .audio_player import AudioConfig, AudioPlayer
+from .barge_in import BargeInListener
 from .chat import ChatClient, ChatConfig
 from .profile import Profile, ProfileManager
 from .state import JarvisState
+from .streaming import SentenceBuffer, split_sentences
 from .stt import WhisperSTT
 from .stt import WyomingConfig as STTConfig
 from .tts import PiperTTS
@@ -51,6 +55,9 @@ class AgentConfig:
     silence_timeout: float = 2.0
     # STT detection sensitivity (RMS amplitude threshold — lower = more sensitive)
     silence_threshold: float = 100.0
+    # Barge-in sensitivity (16-bit RMS scale; higher = less sensitive)
+    barge_in_threshold: float = 300.0
+    barge_in_min_speech_ms: float = 250.0
     palette_index: int | None = None  # index into appearance palette list
     # Default system prompt (used when no profile is active)
     # Loaded from SOUL.md if present, otherwise fallback
@@ -161,6 +168,11 @@ class JarvisAgent:
         # Conversation history (per profile)
         self._messages: list[dict[str, str]] = []
 
+        # Barge-in state
+        self._barge_in: BargeInListener | None = None
+        self._stop_evt = threading.Event()
+        self._producer_task: asyncio.Task | None = None
+
     def on_state_change(self, callback: Callable):
         """Register a callback for state changes."""
         self._state_callbacks.append(callback)
@@ -216,8 +228,59 @@ class JarvisAgent:
         if self.hud:
             self.hud.set_voice_level(level)
 
+    # ── Barge-in ─────────────────────────────────────────────────────
+
+    def _ensure_barge_in(self) -> BargeInListener | None:
+        """Create (once) and start the barge-in mic monitor. None if unavailable."""
+        if self._barge_in is None:
+            self._barge_in = BargeInListener(
+                on_speech=self.interrupt,
+                threshold=self.config.barge_in_threshold,
+                min_speech_ms=self.config.barge_in_min_speech_ms,
+                device=self.config.stt.device,
+            )
+            if not self._barge_in.available:
+                return None
+            self._barge_in.start()
+        return self._barge_in
+
+    @property
+    def stop_requested(self) -> bool:
+        """True if the current reply was interrupted (barge-in or STOP)."""
+        return self._stop_evt.is_set()
+
+    def interrupt(self) -> None:
+        """Stop the current reply (playback + stream) immediately.
+
+        Thread-safe — callable from the barge-in audio thread, a UI STOP
+        button, or the event loop. Idempotent.
+        """
+        if self._stop_evt.is_set():
+            return
+        self._stop_evt.set()
+        logger.info("Interrupt — stopping speech and in-flight stream")
+        try:
+            self.audio.stop()
+        except Exception as e:
+            logger.warning(f"audio.stop() failed: {e}")
+        # Task.cancel() is thread-safe; the producer task exits on the next
+        # await (the SSE read or a queue put).
+        task = self._producer_task
+        if task is not None and not task.done():
+            task.cancel()
+        if self.hud:
+            self.hud.set_voice_level(0.0)
+
+    # ── Voice cycle (streaming) ───────────────────────────────────────
+
     async def _run_voice(self):
-        """Run a single voice cycle: listen → think → speak."""
+        """Run a single voice cycle: listen → think (stream) → speak.
+
+        The reply is spoken sentence-by-sentence as the LLM streams it, so the
+        first sentence starts while the rest is still generating. Barge-in
+        (user speech during SPEAKING) or :meth:`interrupt` stops playback and
+        the in-flight stream.
+        """
         # Listen
         self._set_state(JarvisState.LISTENING)
         logger.info("STT: Starting listen cycle")
@@ -233,25 +296,99 @@ class JarvisAgent:
             self._set_state(JarvisState.IDLE)
             return
 
-        # Think (send to LLM)
+        # Think — stream tokens, speak each complete sentence as it arrives.
         self._set_state(JarvisState.THINKING)
         self._messages.append({"role": "user", "content": text})
-        reply = await self.chat.chat(self._messages, system_prompt=self._system_prompt)
-        if not reply:
-            self._set_state(JarvisState.IDLE)
-            return
-        self._messages.append({"role": "assistant", "content": reply})
+        self._stop_evt.clear()
 
-        # Save history to active profile
-        if self._active_profile:
+        queue: asyncio.Queue = asyncio.Queue()
+        buffer = SentenceBuffer()
+        spoken: list[str] = []
+        streamed_any = False
+
+        def on_token(token: str) -> None:
+            """Stream callback (event-loop thread): buffer → complete sentences."""
+            nonlocal streamed_any
+            if self._stop_evt.is_set():
+                return
+            streamed_any = True
+            for sentence in buffer.feed(token):
+                queue.put_nowait(sentence)
+
+        async def producer() -> None:
+            """Stream the LLM reply; queue sentences; always end with sentinel."""
+            try:
+                reply = await self.chat.chat(
+                    self._messages,
+                    stream=True,
+                    system_prompt=self._system_prompt,
+                    on_token=on_token,
+                )
+                if self._stop_evt.is_set():
+                    return
+                if streamed_any:
+                    # Streamed tokens — sentences already queued via on_token.
+                    # Release the final sentence still held in the buffer.
+                    tail = buffer.flush()
+                    if tail:
+                        queue.put_nowait(tail)
+                elif reply:
+                    # Endpoint ignored `stream` — one-shot fallback: chunk it.
+                    for s in split_sentences(reply):
+                        if self._stop_evt.is_set():
+                            break
+                        queue.put_nowait(s)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"Chat stream error: {e}")
+            finally:
+                queue.put_nowait(None)
+
+        async def speaker() -> None:
+            """Pop sentences; synthesize (async) and play (worker thread)."""
+            listener = self._ensure_barge_in()
+            while True:
+                sentence = await queue.get()
+                if sentence is None or self._stop_evt.is_set():
+                    break
+                if not spoken:
+                    self._set_state(JarvisState.SPEAKING)
+                    if listener is not None:
+                        listener.set_active(True)
+                try:
+                    audio = await self.tts.speak(sentence)
+                except Exception as e:
+                    logger.error(f"TTS error: {e}")
+                    break
+                if audio and not self._stop_evt.is_set():
+                    await asyncio.to_thread(self.audio.play, audio)
+                spoken.append(sentence)
+            if listener is not None:
+                listener.set_active(False)
+
+        self._producer_task = producer_task = asyncio.create_task(producer())
+        speaker_task = asyncio.create_task(speaker())
+        try:
+            await asyncio.gather(producer_task, speaker_task, return_exceptions=True)
+        finally:
+            self._producer_task = None
+            if self.hud:
+                self.hud.set_voice_level(0.0)
+
+        interrupted = self.stop_requested
+
+        # Persist conversation (spoken portion if interrupted).
+        reply = " ".join(spoken).strip()
+        if not interrupted and reply:
+            self._messages.append({"role": "assistant", "content": reply})
+        if self._active_profile and (reply or not interrupted):
             self._active_profile.chat_history = list(self._messages)
-            self.profiles.save(self._active_profile)
+            if reply:
+                self.profiles.save(self._active_profile)
 
-        # Speak
-        self._set_state(JarvisState.SPEAKING)
-        audio = await self.tts.speak(reply)
-        if audio:
-            self.audio.play(audio)
+        if interrupted:
+            logger.info("Voice cycle interrupted (barge-in/STOP)")
         self._set_state(JarvisState.IDLE)
 
     async def chat_text(self, user_text: str, system_prompt: str | None = None) -> str:
@@ -293,6 +430,9 @@ class JarvisAgent:
 
     async def close(self):
         """Close all connections."""
+        if self._barge_in is not None:
+            self._barge_in.stop()
+            self._barge_in = None
         await self.chat.close()
         await self.stt.disconnect()
         await self.tts.disconnect()
