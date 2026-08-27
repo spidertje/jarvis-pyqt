@@ -25,6 +25,7 @@ from .stt import WhisperSTT
 from .stt import WyomingConfig as STTConfig
 from .tts import PiperTTS
 from .tts import WyomingConfig as TTSConfig
+from .wake_word import WakeWordDetector
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,12 @@ class AgentConfig:
     # Barge-in sensitivity (16-bit RMS scale; higher = less sensitive)
     barge_in_threshold: float = 300.0
     barge_in_min_speech_ms: float = 250.0
+    # Wake word (openWakeWord) — say this to start a conversation hands-free
+    wake_word_enabled: bool = True
+    wake_word: str = "hey_jarvis"
+    wake_word_threshold: float = 0.5
+    wake_word_patience: int = 2
+    wake_word_cooldown_s: float = 1.5
     palette_index: int | None = None  # index into appearance palette list
     # Default system prompt (used when no profile is active)
     # Loaded from SOUL.md if present, otherwise fallback
@@ -173,6 +180,10 @@ class JarvisAgent:
         self._stop_evt = threading.Event()
         self._producer_task: asyncio.Task | None = None
 
+        # Wake word (hands-free) — started on demand, active only while IDLE
+        self._wake_word: WakeWordDetector | None = None
+        self._wake_word_callbacks: list[Callable] = []
+
     def on_state_change(self, callback: Callable):
         """Register a callback for state changes."""
         self._state_callbacks.append(callback)
@@ -182,6 +193,10 @@ class JarvisAgent:
         if self.state != new_state:
             logger.info(f"State: {self.state.label} → {new_state.label}")
             self.state = new_state
+            # Wake word only makes sense while idle — silence it otherwise so
+            # it doesn't fire on its own voice or mid-conversation.
+            if self._wake_word is not None:
+                self._wake_word.set_active(new_state == JarvisState.IDLE)
             for cb in self._state_callbacks:
                 cb(new_state)
 
@@ -243,6 +258,67 @@ class JarvisAgent:
                 return None
             self._barge_in.start()
         return self._barge_in
+
+    # ── Wake word (hands-free) ──────────────────────────────────────
+
+    @property
+    def wake_word_available(self) -> bool:
+        """True once a wake word detector has been started successfully."""
+        return self._wake_word is not None and self._wake_word.available
+
+    def start_wake_word(self) -> bool:
+        """Start listening for the wake word. Idempotent.
+
+        Returns True if the detector is live, False if the ML/audio stack
+        is unavailable (wake word silently disabled — push-to-talk still works).
+        """
+        if not self.config.wake_word_enabled:
+            return False
+        if self._wake_word is not None:
+            if self._wake_word.available and self._wake_word._stream is None:
+                self._wake_word.start()
+            return self._wake_word.available
+        detector = WakeWordDetector(
+            on_wake=self._on_wake_word,
+            word=self.config.wake_word,
+            threshold=self.config.wake_word_threshold,
+            patience=self.config.wake_word_patience,
+            cooldown_s=self.config.wake_word_cooldown_s,
+            device=self.config.stt.device,
+        )
+        if not detector.available:
+            logger.info("Wake word unavailable (no openWakeWord model) — using push-to-talk")
+            self._wake_word = None
+            return False
+        detector.start()
+        detector.set_active(self.state == JarvisState.IDLE)
+        self._wake_word = detector
+        return detector._stream is not None
+
+    def stop_wake_word(self) -> None:
+        """Stop the wake word detector (safe to call repeatedly)."""
+        if self._wake_word is not None:
+            self._wake_word.stop()
+            self._wake_word = None
+
+    def on_wake_word(self, callback: Callable) -> None:
+        """Register a callback fired when the wake word is detected (thread-safe).
+
+        ``callback`` is invoked with no arguments from the audio thread. Use it
+        to schedule the voice cycle on the event loop (see main.py).
+        """
+        self._wake_word_callbacks.append(callback)
+
+    def _on_wake_word(self) -> None:
+        """Wake word fired (audio thread) — notify registered callbacks."""
+        logger.info("Wake word fired — starting voice cycle")
+        if self.hud:
+            self.hud.set_state(JarvisState.LISTENING)
+        for cb in self._wake_word_callbacks:
+            try:
+                cb()
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Wake word fire callback error: {e}")
 
     @property
     def stop_requested(self) -> bool:
@@ -433,6 +509,7 @@ class JarvisAgent:
         if self._barge_in is not None:
             self._barge_in.stop()
             self._barge_in = None
+        self.stop_wake_word()
         await self.chat.close()
         await self.stt.disconnect()
         await self.tts.disconnect()

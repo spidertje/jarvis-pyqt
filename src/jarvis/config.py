@@ -201,6 +201,10 @@ class AppConfig:
     silence_timeout: float = 2.0
     stt_sensitivity: float = 100.0  # RMS threshold (lower = more sensitive)
 
+    # Wake word (hands-free)
+    wake_word_enabled: bool = True
+    wake_word_threshold: float = 0.5
+
     def to_env_dict(self) -> dict:
         """Return config as a dict with env var keys (for debug/logging)."""
         return {
@@ -254,6 +258,10 @@ class AppConfig:
             assistant_name=os.environ.get("JARVIS_ASSISTANT_NAME", "") or cls.assistant_name,
             silence_timeout=_env_float("JARVIS_SILENCE_TIMEOUT", cls.silence_timeout),
             stt_sensitivity=_env_float("JARVIS_STT_SENSITIVITY", cls.stt_sensitivity),
+            wake_word_enabled=_env_bool("JARVIS_WAKE_WORD", cls.wake_word_enabled),
+            wake_word_threshold=_env_float(
+                "JARVIS_WAKE_WORD_THRESHOLD", cls.wake_word_threshold
+            ),
         )
 
     # Fields that contain secrets and must never be persisted to disk
@@ -391,6 +399,14 @@ def _env_float(key: str, default: float) -> float:
         return float(val)
     except ValueError:
         return default
+
+
+def _env_bool(key: str, default: bool) -> bool:
+    """Read a boolean env var with a fallback."""
+    val = os.environ.get(key)
+    if val is None or val == "":
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def fields(dataclass_cls):

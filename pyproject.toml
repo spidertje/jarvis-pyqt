@@ -9,6 +9,16 @@ dependencies = [
     "pymysql>=1.1.0",
     "numpy>=1.24.0",
     "requests>=2.31.0",
+    "sounddevice>=0.4.6",
+    "aiohttp>=3.9.0",
+]
+
+[project.optional-dependencies]
+# Hands-free wake word (openWakeWord ONNX). Optional — without it the app
+# falls back to push-to-talk (mic button).
+wakeword = [
+    "openwakeword>=0.6.0",
+    "onnxruntime>=1.17.0",
 ]
 
 [project.scripts]

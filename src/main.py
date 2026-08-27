@@ -280,6 +280,9 @@ class JarvisApp(QWidget):
         # STT
         agent_config.silence_timeout = self.app_config.silence_timeout
         agent_config.silence_threshold = self.app_config.stt_sensitivity
+        # Wake word
+        agent_config.wake_word_enabled = self.app_config.wake_word_enabled
+        agent_config.wake_word_threshold = self.app_config.wake_word_threshold
 
         self.agent = JarvisAgent(agent_config, hud=self.hud)
         # Apply palette hue from agent config if available
@@ -340,6 +343,10 @@ class JarvisApp(QWidget):
 
         # State change tracking
         self.agent.on_state_change(self._on_state_change)
+
+        # Wake word (hands-free) — register the fire handler, start it once the
+        # event loop is up (see _init_services). Fires → run one voice cycle.
+        self.agent.on_wake_word(self._on_wake_word_fired)
 
         # Background tasks
         self._running = False
@@ -479,6 +486,13 @@ class JarvisApp(QWidget):
         else:
             self.status_label.setText("⚠ Partial connection")
             print("Warning: Some services not connected")
+
+        # Start hands-free wake word listening (no-op if unavailable/disabled).
+        # Runs in the background audio thread; only active while IDLE.
+        try:
+            self.agent.start_wake_word()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Wake word start failed (push-to-talk still works): {e}")
 
     def _on_state_change(self, state: JarvisState):
         """Update UI on state change."""
@@ -753,6 +767,27 @@ class JarvisApp(QWidget):
                 logger.error(f"Voice loop error: {e}")
                 logger.error(traceback.format_exc())
             await asyncio.sleep(0.1)  # Brief pause between cycles
+
+    def _on_wake_word_fired(self):
+        """Wake word detected (audio thread) — run a single voice cycle.
+
+        Schedules the coroutine on the background event loop. If a cycle is
+        already in flight we ignore the trigger (the agent's state machine and
+        the detector cooldown keep this from double-firing).
+        """
+        if self._voice_task and not self._voice_task.done():
+            return
+        loop = getattr(self.event_loop_thread, "loop", None)
+        if not loop or loop.is_closed():
+            return
+
+        async def _run_once():
+            try:
+                await self.agent._run_voice()
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Wake-word voice cycle error: {e}")
+
+        self._voice_task = asyncio.run_coroutine_threadsafe(_run_once(), loop)
 
     def _on_send_clicked(self):
         """Sync wrapper — dispatches async _send_chat on the background event loop."""

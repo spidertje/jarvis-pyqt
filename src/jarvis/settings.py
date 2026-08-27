@@ -8,6 +8,7 @@ from collections.abc import Callable
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -103,6 +104,9 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._build_face_tab(), "👁 Face")
         self.tabs.addTab(self._build_profiles_tab(), "👤 Profiles")
         self.tabs.addTab(self._build_appearance_tab(), "🎨 Appearance")
+
+        # Reflect the live wake-word detector state (if an agent is attached)
+        self._update_wake_status()
 
         layout.addWidget(self.tabs)
 
@@ -363,6 +367,42 @@ class SettingsDialog(QDialog):
             }
         """)
         layout.addWidget(self.sensitivity_spin)
+
+        # ── Wake Word (hands-free) ────────────────────────────────────
+        layout.addSpacing(16)
+        wake_group = self._make_group("Wake Word (hands-free)", "🎤")
+        wake_layout = QVBoxLayout(wake_group)
+
+        self.wake_enabled = QCheckBox('Say the wake word to start a conversation (no click needed)')
+        self.wake_enabled.setChecked(bool(getattr(config, "wake_word_enabled", True)))
+        self.wake_enabled.setStyleSheet("color: rgba(210, 230, 250, 230); font-size: 12px;")
+        self.wake_enabled.toggled.connect(
+            lambda _c: (self._update_wake_status(), self.wake_threshold.setEnabled(_c))
+        )
+        wake_layout.addWidget(self.wake_enabled)
+
+        self.wake_available = QLabel("Status: …")
+        self.wake_available.setStyleSheet("color: rgba(160, 190, 220, 200); font-size: 11px;")
+        self.wake_available.setWordWrap(True)
+        wake_layout.addWidget(self.wake_available)
+
+        wake_thresh_row = QHBoxLayout()
+        wake_thresh_lbl = QLabel("Sensitivity threshold (lower = triggers more easily):")
+        wake_thresh_lbl.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        wake_thresh_row.addWidget(wake_thresh_lbl)
+        self.wake_threshold = QSlider(Qt.Orientation.Horizontal)
+        self.wake_threshold.setRange(30, 95)          # 0.30 – 0.95
+        self.wake_threshold.setSingleStep(5)
+        default_wake_thresh = int(round(getattr(config, "wake_word_threshold", 0.5) * 100))
+        self.wake_threshold.setValue(max(30, min(95, default_wake_thresh)))
+        self.wake_threshold.valueChanged.connect(self._update_wake_threshold)
+        wake_thresh_row.addWidget(self.wake_threshold, stretch=1)
+        self.wake_threshold_value = QLabel("0.50")
+        self.wake_threshold_value.setStyleSheet("color: rgba(0, 220, 255, 230); font-size: 12px; min-width: 35px;")
+        wake_thresh_row.addWidget(self.wake_threshold_value)
+        wake_layout.addLayout(wake_thresh_row)
+
+        layout.addWidget(wake_group)
 
         layout.addStretch()
         return group
@@ -1152,6 +1192,35 @@ class SettingsDialog(QDialog):
         if self.agent is not None and hasattr(self.agent, "hud") and self.agent.hud:
             self.agent.hud.set_contrast_factor(value / 100.0)
 
+    def _update_wake_threshold(self, value: int):
+        """Update the wake-word threshold label and apply it live to the agent."""
+        if hasattr(self, "wake_threshold_value"):
+            self.wake_threshold_value.setText(f"{value / 100.0:.2f}")
+        if self.agent_config is not None:
+            self.agent_config.wake_word_threshold = value / 100.0
+        # Apply live so the detector picks up the new threshold immediately
+        if self.agent is not None and getattr(self.agent, "_wake_word", None):
+            self.agent._wake_word.threshold = value / 100.0
+
+    def _update_wake_status(self):
+        """Show the live wake-word detector state in the STT tab's status label."""
+        if not hasattr(self, "wake_available"):
+            return
+        if self.agent is None:
+            self.wake_available.setText(
+                "Status: no agent attached — enable in the running app"
+            )
+            return
+        if getattr(self, "wake_enabled", None) is not None and not self.wake_enabled.isChecked():
+            self.wake_available.setText("Status: disabled (see checkbox above)")
+            return
+        if self.agent.wake_word_available:
+            self.wake_available.setText("Status: ✓ detector loaded and ready")
+        else:
+            self.wake_available.setText(
+                "Status: ✗ not available — push-to-talk (mic button) still works"
+            )
+
     def _save_settings(self):
         """Save settings and close dialog."""
         values = self._get_values()
@@ -1214,6 +1283,12 @@ class SettingsDialog(QDialog):
             # STT sensitivity (RMS threshold)
             if hasattr(self, "sensitivity_spin"):
                 self.agent_config.silence_threshold = float(self.sensitivity_spin.value())
+
+            # Wake word (hands-free)
+            if hasattr(self, "wake_enabled"):
+                self.agent_config.wake_word_enabled = bool(self.wake_enabled.isChecked())
+            if hasattr(self, "wake_threshold"):
+                self.agent_config.wake_word_threshold = self.wake_threshold.value() / 100.0
 
             # DB — only update non-empty values from the form (don't
             # overwrite with empty strings from blank QLineEdit fields)
@@ -1278,6 +1353,8 @@ class SettingsDialog(QDialog):
             self.app_config.assistant_name = self.agent_config.assistant_name
             self.app_config.silence_timeout = self.agent_config.silence_timeout
             self.app_config.stt_sensitivity = self.agent_config.silence_threshold
+            self.app_config.wake_word_enabled = self.agent_config.wake_word_enabled
+            self.app_config.wake_word_threshold = self.agent_config.wake_word_threshold
             self.app_config.palette_index = self.agent_config.palette_index
             self.app_config.contrast_boost = self.agent_config.contrast_boost
 

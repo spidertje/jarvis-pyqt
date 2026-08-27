@@ -4,3 +4,6 @@ numpy
 sounddevice
 opencv-contrib-python
 pymysql
+# Wake word (hands-free) — optional; the app degrades to push-to-talk without these.
+openwakeword
+onnxruntime
