@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
 )
 
 from jarvis.face import FaceConfig
+from jarvis.profile import PALETTE_HUES
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,16 @@ class SettingsDialog(QDialog):
 
         # Reflect the live wake-word detector state (if an agent is attached)
         self._update_wake_status()
+
+        # Reflect the active profile (and keep it live if face recognition
+        # switches profiles while this dialog is open).
+        if hasattr(self, "profile_status"):
+            self._update_profile_status()
+        if self.agent is not None and hasattr(self.agent, "on_profile_changed"):
+            try:
+                self.agent.on_profile_changed(lambda _p: self._update_profile_status())
+            except Exception:  # noqa: BLE001
+                pass
 
         layout.addWidget(self.tabs)
 
@@ -1028,11 +1039,99 @@ class SettingsDialog(QDialog):
         self.profile_combo.currentIndexChanged.connect(self._on_profile_selected)
         layout.addWidget(self.profile_face_link)
 
+        # Active-profile status
+        self.profile_status = QLabel("Active: default (no profile)")
+        self.profile_status.setStyleSheet("color: rgba(0, 220, 255, 220); font-size: 12px; font-weight: bold;")
+        layout.addWidget(self.profile_status)
+
+        # Activate / Reset controls (manual switching — face recognition also
+        # switches automatically)
+        btn_row = QHBoxLayout()
+        self.profile_activate_btn = QPushButton("✅ Activate Selected")
+        self.profile_activate_btn.setFixedHeight(34)
+        self.profile_activate_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(0, 180, 120, 70);
+                border: 1px solid rgba(0, 220, 150, 120);
+                border-radius: 4px;
+                color: white;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: rgba(0, 200, 140, 100); }
+        """)
+        self.profile_activate_btn.clicked.connect(self._activate_profile)
+        btn_row.addWidget(self.profile_activate_btn)
+
+        self.profile_reset_btn = QPushButton("↩ Reset to Default")
+        self.profile_reset_btn.setFixedHeight(34)
+        self.profile_reset_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(80, 80, 80, 60);
+                border: 1px solid rgba(150, 150, 150, 100);
+                border-radius: 4px;
+                color: #ccc;
+                font-size: 12px;
+            }
+            QPushButton:hover { background: rgba(100, 100, 100, 80); }
+        """)
+        self.profile_reset_btn.clicked.connect(self._reset_profile)
+        btn_row.addWidget(self.profile_reset_btn)
+        layout.addLayout(btn_row)
+
         layout.addStretch()
         # Load face names initially after construction
         if self._profile_names:
             self._on_profile_selected(0)
         return group
+
+    def _current_active_profile_name(self) -> str | None:
+        """Name of the active profile, if any."""
+        if self.agent is not None and getattr(self.agent, "_active_profile", None):
+            return self.agent._active_profile.name
+        return None
+
+    def _update_profile_status(self) -> None:
+        """Reflect the active profile in the Profiles tab status label."""
+        if not hasattr(self, "profile_status"):
+            return
+        try:
+            from PyQt6 import sip
+
+            if sip.isdeleted(self.profile_status):
+                return
+        except Exception:  # noqa: BLE001
+            return
+        name = self._current_active_profile_name()
+        if name:
+            self.profile_status.setText(f"Active: {name}")
+        else:
+            self.profile_status.setText("Active: default (no profile)")
+
+    def _activate_profile(self) -> None:
+        """Activate the selected profile (immediate, applies prompt/voice/theme)."""
+        if not (self.agent and hasattr(self, "profile_combo") and self.profile_combo.count()):
+            QMessageBox.warning(self, "No Profiles", "No profiles are available.\n"
+                                   "Check the Database tab connection first.")
+            return
+        name = self.profile_combo.currentText()
+        if self.agent.switch_profile(name):
+            self._update_profile_status()
+            QMessageBox.information(self, "Profile Activated",
+                                    f"Switched to profile: {name}\n"
+                                    "System prompt, assistant name, chat history and "
+                                    "accent color now apply.")
+        else:
+            QMessageBox.warning(self, "Switch Failed",
+                                f"Could not activate profile '{name}'.")
+
+    def _reset_profile(self) -> None:
+        """Clear the active profile back to defaults."""
+        if self.agent is None:
+            QMessageBox.warning(self, "No Agent", "No agent attached.")
+            return
+        self.agent.clear_profile()
+        self._update_profile_status()
 
     def _on_profile_selected(self, index: int):
         """Populate face-name link field when a profile is selected."""
@@ -1084,18 +1183,7 @@ class SettingsDialog(QDialog):
             }
         """)
         # Define 10 high-contrast hues (HSL hue values 0-360)
-        self._palette_hues = [
-            182,
-            30,
-            120,
-            250,
-            200,
-            0,
-            80,
-            220,
-            40,
-            60,
-        ]  # cyan, copper, emerald, violet, matrix, red, green, blue, yellow, orange
+        self._palette_hues = list(PALETTE_HUES)
         self._palette_names = [
             "Cyan/Teal",
             "Copper/Amber",

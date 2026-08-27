@@ -17,6 +17,11 @@ import pymysql
 
 logger = logging.getLogger(__name__)
 
+# Canonical HUD palette order (index → hue). Shared by the Appearance settings
+# tab, the agent (default-palette restoration), and startup theme application.
+PALETTE_HUES = [182, 30, 120, 250, 200, 0, 80, 220, 40, 60]  # cyan..orange
+DEFAULT_PALETTE_INDEX = 0  # cyan
+
 
 @dataclass
 class Profile:

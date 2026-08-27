@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from .audio_player import AudioConfig, AudioPlayer
 from .barge_in import BargeInListener
 from .chat import ChatClient, ChatConfig
-from .profile import Profile, ProfileManager
+from .profile import PALETTE_HUES, Profile, ProfileManager
 from .state import JarvisState
 from .streaming import SentenceBuffer, split_sentences
 from .stt import WhisperSTT
@@ -171,6 +171,7 @@ class JarvisAgent:
 
         # Active profile
         self._active_profile: Profile | None = None
+        self._profile_callbacks: list[Callable] = []
 
         # Conversation history (per profile)
         self._messages: list[dict[str, str]] = []
@@ -208,7 +209,9 @@ class JarvisAgent:
         """
         Switch to a profile by name.
 
-        Loads the profile's system prompt, chat history, and assistant name.
+        Loads the profile's system prompt, chat history, assistant name and
+        accent color, and notifies profile-change listeners (e.g. the HUD /
+        settings UI).
         """
         if not self.profiles.switch(name):
             return False
@@ -217,26 +220,55 @@ class JarvisAgent:
         if self._active_profile:
             self._system_prompt = self._active_profile.system_prompt
             self.config.assistant_name = self._active_profile.assistant_name
-            # Update HUD with new assistant name
+            # Update HUD with new assistant name + accent hue
             if self.hud:
                 self.hud.set_assistant_name(self.config.assistant_name)
+                self.hud.set_profile(name, self._active_profile.accent_hue)
             self._messages = list(self._active_profile.chat_history)
             logger.info(
                 f"Profile switched to: {name} "
                 f"(assistant: {self.config.assistant_name}, "
                 f"prompt: {len(self._system_prompt)} chars, "
-                f"history: {len(self._messages)} messages)"
+                f"history: {len(self._messages)} messages, "
+                f"hue: {self._active_profile.accent_hue})"
             )
+            for cb in self._profile_callbacks:
+                try:
+                    cb(self._active_profile)
+                except Exception as e:  # noqa: BLE001
+                    logger.error(f"Profile callback error: {e}")
         return True
 
+    def on_profile_changed(self, callback: Callable) -> None:
+        """Register a callback for profile switches/clears.
+
+        ``callback`` receives the active :class:`Profile`, or ``None`` when
+        the profile is cleared (back to defaults).
+        """
+        self._profile_callbacks.append(callback)
+
     def clear_profile(self):
-        """Clear active profile (return to default)."""
+        """Clear active profile (return to defaults)."""
         self.profiles.clear()
         self._active_profile = None
         self._system_prompt = self.config.default_system_prompt or (
             "You are Jarvis, a helpful AI assistant."
         )
         self._messages = []
+        # Restore HUD: default assistant name + palette from appearance settings
+        if self.hud:
+            self.hud.set_assistant_name(self.config.assistant_name)
+            self.hud.clear_profile()
+            idx = self.config.palette_index
+            if idx is not None and 0 <= idx < len(PALETTE_HUES):
+                self.hud.set_palette_hue(PALETTE_HUES[idx])
+            else:
+                self.hud.clear_palette_hue()
+        for cb in self._profile_callbacks:
+            try:
+                cb(None)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Profile callback error: {e}")
 
     def _on_voice_level(self, level: float):
         """Update HUD voice bars from microphone amplitude (called during STT listen)."""

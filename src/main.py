@@ -40,7 +40,7 @@ from jarvis.config import AppConfig
 from jarvis.face import FaceConfig
 from jarvis.face_screen import FaceRecScreen
 from jarvis.hud_overlay import HUDOverlay
-from jarvis.profile import Profile
+from jarvis.profile import PALETTE_HUES, Profile
 from jarvis.settings import SettingsDialog
 from jarvis.state import JarvisState
 
@@ -287,11 +287,10 @@ class JarvisApp(QWidget):
         self.agent = JarvisAgent(agent_config, hud=self.hud)
         # Apply palette hue from agent config if available
         if hasattr(agent_config, "palette_index") and agent_config.palette_index is not None:
-            # Map index to hue (same as in settings)
-            palette_hues = [182, 30, 120, 250, 200, 0, 80, 220, 40, 60]
+            # Map index to hue (same list as the Appearance settings tab)
             idx = agent_config.palette_index
-            if 0 <= idx < len(palette_hues):
-                self.hud.set_palette_hue(palette_hues[idx])
+            if 0 <= idx < len(PALETTE_HUES):
+                self.hud.set_palette_hue(PALETTE_HUES[idx])
 
         # Apply contrast factor to HUD
         self.hud.set_contrast_factor(agent_config.contrast_boost / 100.0)
