@@ -40,6 +40,7 @@ from jarvis.config import AppConfig
 from jarvis.face import FaceConfig
 from jarvis.face_screen import FaceRecScreen
 from jarvis.hud_overlay import HUDOverlay
+from jarvis.hud_panels import ApprovalCard, HUDPanels
 from jarvis.profile import PALETTE_HUES, Profile
 from jarvis.settings import SettingsDialog
 from jarvis.state import JarvisState
@@ -231,6 +232,11 @@ class JarvisApp(QWidget):
     """Main Jarvis application window."""
 
     _status_updated = pyqtSignal(str)
+    # Bridges agent (loop thread) → Qt widgets (GUI thread)
+    _panel_user_text = pyqtSignal(str)
+    _panel_reply_text = pyqtSignal(str)
+    _panel_tool_call = pyqtSignal(str, str)
+    _approval_requested = pyqtSignal(str, str)
 
     def __init__(self):
         super().__init__()
@@ -240,6 +246,10 @@ class JarvisApp(QWidget):
         self.hud.resize(800, 600)
         self.hud.move(0, 0)
         self.hud.show()
+
+        # Live panels: transcript / streaming reply / tool activity + approval card
+        self.panels = HUDPanels()
+        self.approval_card = ApprovalCard()
 
         # Face recognition screen (shown on startup, fades out when face is recognized)
         self.face_screen = FaceRecScreen()
@@ -343,6 +353,18 @@ class JarvisApp(QWidget):
         # State change tracking
         self.agent.on_state_change(self._on_state_change)
 
+        # Live panels: transcript / streaming reply / tool-activity feed.
+        # Agent callbacks fire on the event-loop thread — bridge them to the
+        # Qt widgets via signals (queued across threads, same pattern as _status_updated).
+        self._panel_user_text.connect(self._on_panel_user_text)
+        self._panel_reply_text.connect(self._on_panel_reply_text)
+        self._panel_tool_call.connect(self._on_panel_tool_call)
+        self._approval_requested.connect(self._on_approval_requested)
+        self.agent.on_user_text(lambda t: self._panel_user_text.emit(t))
+        self.agent.on_reply_text(lambda c: self._panel_reply_text.emit(c))
+        self.agent.on_tool_call(lambda k, d: self._panel_tool_call.emit(k, d))
+        self.approval_card.decided.connect(self._on_approval_decided)
+
         # Wake word (hands-free) — register the fire handler, start it once the
         # event loop is up (see _init_services). Fires → run one voice cycle.
         self.agent.on_wake_word(self._on_wake_word_fired)
@@ -409,6 +431,25 @@ class JarvisApp(QWidget):
         self.mic_btn.clicked.connect(self._toggle_voice)
         bar_layout.addWidget(self.mic_btn, alignment=Qt.AlignmentFlag.AlignLeft)
 
+        # STOP button — cut the current reply (playback + in-flight stream)
+        self.stop_btn = QPushButton("⛔")
+        self.stop_btn.setFixedSize(34, 34)
+        self.stop_btn.setToolTip("Stop Jarvis mid-reply")
+        self.stop_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(180, 40, 40, 70);
+                border: 2px solid rgba(255, 120, 120, 140);
+                border-radius: 17px;
+                color: white;
+                font-size: 15px;
+            }
+            QPushButton:hover {
+                background: rgba(220, 60, 60, 130);
+            }
+        """)
+        self.stop_btn.clicked.connect(self._on_stop_clicked)
+        bar_layout.addWidget(self.stop_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+
         # Status label
         self.status_label = QLabel("⏹ Standby")
         self.status_label.setStyleSheet("color: rgba(0, 200, 255, 200); font-size: 14px;")
@@ -472,10 +513,52 @@ class JarvisApp(QWidget):
         self.settings_btn.clicked.connect(self._open_settings)
         bar_layout.addWidget(self.settings_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
+        # Live panels (transcript / streaming reply / tool activity) —
+        # stacked above the bottom bar; hidden until a turn produces content.
+        self.panels.move(0, 504)  # 600 - 60 (bar) - 96 (panels)
+        layout.addWidget(self.panels, alignment=Qt.AlignmentFlag.AlignBottom)
+
+        # Approval card — centered overlay, shown on demand
+        self.approval_card.move((800 - 420) // 2, 190)
+        self.approval_card.raise_()
+
         layout.addWidget(self.bottom_bar)
 
         # Initially hide the bottom bar (shown after face recognition)
         self.bottom_bar.hide()
+
+    # ── Live panel handlers (GUI thread) ─────────────────────────────
+
+    def _on_panel_user_text(self, text: str):
+        self.panels.set_user_text(text)
+
+    def _on_panel_reply_text(self, chunk: str):
+        self.panels.append_reply(chunk)
+
+    def _on_panel_tool_call(self, key: str, description: str):
+        self.panels.set_activity(key, description)
+
+    # ── STOP ─────────────────────────────────────────────────────────
+
+    def _on_stop_clicked(self):
+        """Stop the current reply (playback + in-flight stream).
+
+        ``interrupt()`` is thread-safe by design — this runs on the GUI
+        thread while the stream plays on the event-loop thread.
+        """
+        logger.info("STOP pressed — interrupting current reply")
+        self.agent.interrupt()
+
+    # ── Approval card ────────────────────────────────────────────────
+
+    def _on_approval_requested(self, action: str, detail: str):
+        """Agent requested approval for a local action — show the card."""
+        self.approval_card.show_action(action, detail)
+
+    def _on_approval_decided(self, allowed: bool):
+        """User clicked ALLOW/DENY — unblock the agent's pending request."""
+        logger.info(f"Approval {'granted' if allowed else 'denied'}")
+        self.agent.resolve_approval(allowed)
 
     async def _init_services(self):
         """Initialize all services on startup."""
@@ -496,6 +579,9 @@ class JarvisApp(QWidget):
     def _on_state_change(self, state: JarvisState):
         """Update UI on state change."""
         self.hud.set_state(state)
+        # A new voice cycle begins — reset the live panels for the new turn.
+        if state == JarvisState.LISTENING:
+            self.panels.clear_turn()
         state_colors = {
             JarvisState.IDLE: ("⏹ Standby", "rgba(0, 200, 255, 200)"),
             JarvisState.LISTENING: ("🎙 Listening...", "rgba(0, 255, 100, 220)"),

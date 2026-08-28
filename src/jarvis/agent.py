@@ -15,6 +15,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+
 from .audio_player import AudioConfig, AudioPlayer
 from .barge_in import BargeInListener
 from .chat import ChatClient, ChatConfig
@@ -176,6 +177,16 @@ class JarvisAgent:
         # Conversation history (per profile)
         self._messages: list[dict[str, str]] = []
 
+        # HUD panel callbacks (fired on the event-loop thread — the UI must
+        # bridge them to Qt widgets via signals, as with state changes).
+        self._user_text_callbacks: list[Callable[[str], None]] = []
+        self._reply_text_callbacks: list[Callable[[str], None]] = []
+        self._tool_call_callbacks: list[Callable[[str, str], None]] = []
+
+        # Approval gate (locally-executed actions).
+        self._approval_evt: threading.Event | None = None
+        self._approval_result: bool = False
+
         # Barge-in state
         self._barge_in: BargeInListener | None = None
         self._stop_evt = threading.Event()
@@ -188,6 +199,76 @@ class JarvisAgent:
     def on_state_change(self, callback: Callable):
         """Register a callback for state changes."""
         self._state_callbacks.append(callback)
+
+    # ── HUD panel callbacks ──────────────────────────────────────────
+
+    def on_user_text(self, callback: Callable[[str], None]) -> None:
+        """Register a callback fired with the user's utterance (per turn)."""
+        self._user_text_callbacks.append(callback)
+
+    def on_reply_text(self, callback: Callable[[str], None]) -> None:
+        """Register a callback fired with each streamed reply chunk."""
+        self._reply_text_callbacks.append(callback)
+
+    def on_tool_call(self, callback: Callable[[str, str], None]) -> None:
+        """Register a callback fired for in-band LLM tool calls.
+
+        ``callback(key, description)`` — ``key`` is the stable tool-call id,
+        ``description`` is the running "name(args)" snapshot.
+        """
+        self._tool_call_callbacks.append(callback)
+
+    def _emit_user_text(self, text: str) -> None:
+        for cb in self._user_text_callbacks:
+            try:
+                cb(text)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"User-text callback error: {e}")
+
+    def _emit_reply_text(self, chunk: str) -> None:
+        for cb in self._reply_text_callbacks:
+            try:
+                cb(chunk)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Reply-text callback error: {e}")
+
+    def _emit_tool_call(self, key: str, description: str) -> None:
+        for cb in self._tool_call_callbacks:
+            try:
+                cb(key, description)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Tool-call callback error: {e}")
+
+    # ── Approval gate (locally-executed actions) ─────────────────────
+
+    async def request_approval(self, action: str, detail: str = "", timeout: float = 60.0) -> bool:
+        """Ask the user to ALLOW/DENY a locally-executed action.
+
+        Blocks (without stalling the Qt event loop — the UI thread is a
+        separate thread) until :meth:`resolve_approval` is called or
+        ``timeout`` elapses. Deny (False) is the safe default on timeout.
+
+        Scope: gates *local* actions only. Tool calls executed
+        server-side are governed by the server's own approval settings.
+        """
+        if self._approval_evt is not None:
+            logger.warning("request_approval called while one is pending — denying new request")
+            return False
+        self._approval_evt = threading.Event()
+        self._approval_result = False
+        logger.info(f"Approval requested: {action}")
+        try:
+            await asyncio.to_thread(self._approval_evt.wait, timeout)
+            return self._approval_result
+        finally:
+            self._approval_evt = None
+
+    def resolve_approval(self, allowed: bool) -> None:
+        """Resolve a pending approval (safe to call from any thread, e.g. a UI button)."""
+        if self._approval_evt is None:
+            return
+        self._approval_result = allowed
+        self._approval_evt.set()
 
     def _set_state(self, new_state: JarvisState):
         """Set state and notify callbacks."""
@@ -408,6 +489,7 @@ class JarvisAgent:
         self._set_state(JarvisState.THINKING)
         self._messages.append({"role": "user", "content": text})
         self._stop_evt.clear()
+        self._emit_user_text(text)
 
         queue: asyncio.Queue = asyncio.Queue()
         buffer = SentenceBuffer()
@@ -420,6 +502,7 @@ class JarvisAgent:
             if self._stop_evt.is_set():
                 return
             streamed_any = True
+            self._emit_reply_text(token)
             for sentence in buffer.feed(token):
                 queue.put_nowait(sentence)
 
@@ -431,6 +514,7 @@ class JarvisAgent:
                     stream=True,
                     system_prompt=self._system_prompt,
                     on_token=on_token,
+                    on_tool_call=lambda key, desc: self._emit_tool_call(key, desc),
                 )
                 if self._stop_evt.is_set():
                     return

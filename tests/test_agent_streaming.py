@@ -23,7 +23,7 @@ def _make_agent(reply_tokens, speak_delay=0.0):
     agent.stt.listen = AsyncMock(return_value="Tell me a short story.")
 
     # Chat streams tokens through on_token (simulating a real SSE stream).
-    async def fake_chat(messages, stream=False, system_prompt=None, on_token=None):
+    async def fake_chat(messages, stream=False, system_prompt=None, on_token=None, on_tool_call=None):
         if on_token:
             for tok in reply_tokens:
                 on_token(tok)
@@ -115,7 +115,7 @@ class TestStreamingVoiceCycle:
         """If on_token is never called, the one-shot reply is still spoken."""
         agent = _make_agent([])  # no tokens
 
-        async def fake_chat(messages, stream=False, system_prompt=None, on_token=None):
+        async def fake_chat(messages, stream=False, system_prompt=None, on_token=None, on_tool_call=None):
             return "This whole reply is one shot. No streaming."
 
         agent.chat.chat = fake_chat

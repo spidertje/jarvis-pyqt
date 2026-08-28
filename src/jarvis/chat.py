@@ -57,6 +57,7 @@ class ChatClient:
         stream: bool = False,
         system_prompt: str | None = None,
         on_token=None,
+        on_tool_call=None,
     ) -> str | None:
         """
         Send chat messages and get a response.
@@ -66,6 +67,8 @@ class ChatClient:
             stream: If True, tokens are delivered via ``on_token`` as they arrive.
             system_prompt: Optional system prompt to prepend.
             on_token: Optional callback(text_chunk) called for each streamed token.
+            on_tool_call: Optional callback(dict) called for each tool call the
+                LLM emits in-band (OpenAI ``tool_calls`` deltas, aggregated by id).
 
         Returns:
             Complete text response, or None on failure.
@@ -86,7 +89,9 @@ class ChatClient:
 
         try:
             if stream:
-                result = await self._stream_chat(session, payload, on_token=on_token)
+                result = await self._stream_chat(
+                    session, payload, on_token=on_token, on_tool_call=on_tool_call
+                )
                 if result is not None:
                     return result
                 # Endpoint ignored `stream` (or sent nothing) — fall back to one-shot
@@ -116,12 +121,17 @@ class ChatClient:
         session: aiohttp.ClientSession,
         payload: dict,
         on_token=None,
+        on_tool_call=None,
     ) -> str | None:
         """
         Stream tokens from the API (SSE ``data:`` chunks).
 
         Args:
             on_token: Optional callback(text_chunk) for each token.
+            on_tool_call: Optional callback(key, description) for tool calls the
+                LLM emits in-band. ``key`` is the stable tool-call id;
+                ``description`` is the running "name(args)" snapshot, which is
+                re-sent (accumulated) on each fragment of a streaming call.
 
         Returns:
             Full response text, or None if no tokens were received.
@@ -131,6 +141,7 @@ class ChatClient:
             return None
         payload = {**payload, "stream": True}
         chunks: list[str] = []
+        tool_calls: dict[str, dict] = {}  # index -> {id, name, arguments}
         url = f"{self.config.base_url}/chat/completions"
         async with session.post(url, json=payload) as resp:
             if resp.status != 200:
@@ -156,6 +167,33 @@ class ChatClient:
                         chunks.append(token)
                         if on_token:
                             on_token(token)
+                    # In-band tool calls (OpenAI tool_calls deltas).
+                    for tc in delta.get("tool_calls", []) or []:
+                        info = tool_calls.setdefault(tc.get("index", 0), {
+                            "id": "", "name": "", "arguments": ""
+                        })
+                        frag = tc.get("function") or {}
+                        if tc.get("id"):
+                            info["id"] = tc["id"]
+                        if frag.get("name"):
+                            info["name"] = frag["name"]
+                        if frag.get("arguments"):
+                            info["arguments"] += frag["arguments"]
+                        if on_tool_call:
+                            on_tool_call(
+                                info["id"] or f"tc-{tc.get('index', 0)}",
+                                self._describe_tool_call(info),
+                            )
                 except (json.JSONDecodeError, KeyError, IndexError):
                     continue
         return "".join(chunks) if chunks else None
+
+    @staticmethod
+    def _describe_tool_call(info: dict) -> str:
+        """Human-readable one-line description of a (partial) tool call."""
+        name = info.get("name") or "…"
+        args = (info.get("arguments") or "").strip()
+        # Trim long argument JSON so the HUD line stays readable.
+        if len(args) > 48:
+            args = args[:47] + "…"
+        return f"▸ {name}({args})" if args else f"▸ {name}(…)"

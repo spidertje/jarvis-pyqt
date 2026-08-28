@@ -180,3 +180,75 @@ class TestStreamErrors:
         reply = await client.chat([{"role": "user", "content": "hi"}])
         assert reply is None
         server.stop()
+
+
+class TestStreamToolCalls:
+    """In-band tool_calls deltas must be surfaced via on_tool_call."""
+
+    @pytest.fixture
+    def tool_server(self):
+        """SSE server that emits one tool call (split across fragments)."""
+        server = _MockSSEServer()
+
+        def _tool_stream(conn):
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    return
+                data += chunk
+            # Fragments: id+name first, then argument JSON in two chunks.
+            events = [
+                {"choices": [{"delta": {"tool_calls": [
+                    {"index": 0, "id": "call_abc",
+                     "function": {"name": "get_weather", "arguments": '{"city": '}}]}}]},
+                {"choices": [{"delta": {"tool_calls": [
+                    {"index": 0,
+                     "function": {"arguments": '"Rīga"'}}]}}]},
+                {"choices": [{"delta": {"tool_calls": [
+                    {"index": 0, "function": {"arguments": "}"}}]}}]},
+                {"choices": [{"delta": {"content": "Done."}}]},
+            ]
+            body_out = b"".join(f"data: {json.dumps(e)}\n\n".encode() for e in events)
+            body_out += b"data: [DONE]\n\n"
+            resp = (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/event-stream\r\n"
+                f"Content-Length: {len(body_out)}\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode() + body_out
+            conn.sendall(resp)
+            conn.close()
+
+        server._handle = _tool_stream
+        return server
+
+    @pytest.mark.asyncio
+    async def test_tool_call_fragments_aggregated(self, tool_server):
+        client = ChatClient(ChatConfig(base_url=f"http://127.0.0.1:{tool_server.port}/v1"))
+        calls = []
+        reply = await client.chat(
+            [{"role": "user", "content": "weather in rīga?"}],
+            stream=True,
+            on_tool_call=lambda k, d: calls.append((k, d)),
+        )
+        tool_server.stop()
+        assert reply == "Done."
+        # Every fragment fires the callback (accumulated snapshot each time).
+        assert len(calls) == 3
+        # All fragments share the stable id.
+        assert all(k == "call_abc" for k, _ in calls)
+        # Final snapshot has the full name and the complete argument JSON.
+        last_key, last_desc = calls[-1]
+        assert "get_weather" in last_desc
+        assert "Rīga" in last_desc
+
+    @pytest.mark.asyncio
+    async def test_no_tool_calls_without_callback(self, tool_server):
+        """No on_tool_call registered → tool deltas are ignored, text still returns."""
+        client = ChatClient(ChatConfig(base_url=f"http://127.0.0.1:{tool_server.port}/v1"))
+        reply = await client.chat(
+            [{"role": "user", "content": "weather in rīga?"}], stream=True
+        )
+        tool_server.stop()
+        assert reply == "Done."
