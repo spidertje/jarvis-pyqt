@@ -59,9 +59,9 @@ python3 src/main.py
 
 | Service | Host | Port | Protocol |
 |---------|------|------|----------|
-| Piper TTS | 192.168.55.41 | 10200 | Wyoming |
-| Whisper STT | 192.168.55.41 | 10300 | Wyoming |
-| LLM API | 192.168.55.179 | 8642 | OpenAI |
+| Piper TTS | 192.168.xx.xx | 10200 | Wyoming |
+| Whisper STT | 192.168.xx.xx | 10300 | Wyoming |
+| LLM API | 192.168.xx.xx | 8642 | OpenAI |
 
 ## Configuration
 
