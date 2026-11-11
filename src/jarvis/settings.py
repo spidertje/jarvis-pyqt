@@ -1151,6 +1151,25 @@ class SettingsDialog(QDialog):
         group = self._make_group("Appearance & Themes", "🎨")
         layout = QVBoxLayout(group)
 
+        # Frontend selector (arc reactor / smoke face)
+        flbl = QLabel("HUD Frontend:")
+        flbl.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        layout.addWidget(flbl)
+
+        self.frontend_combo = QComboBox()
+        self.frontend_combo.setFixedHeight(30)
+        self.frontend_combo.addItem("Arc Reactor", "arc")
+        self.frontend_combo.addItem("Smoke Face (emotive)", "smoke")
+        self.frontend_combo.setStyleSheet(
+            "QComboBox{background:rgba(0,0,0,60);border:1px solid rgba(0,200,255,80);"
+            "border-radius:4px;padding:6px 10px;color:#e0e0e0;font-size:13px;}"
+        )
+        cur_fe = getattr(config, "frontend", "arc") or "arc"
+        self.frontend_combo.setCurrentIndex(1 if cur_fe == "smoke" else 0)
+        self.frontend_combo.currentIndexChanged.connect(self._on_frontend_changed)
+        layout.addWidget(self.frontend_combo)
+        layout.addSpacing(10)
+
         # Palette selector
         lbl = QLabel("Color Palette:")
         lbl.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
@@ -1255,6 +1274,16 @@ class SettingsDialog(QDialog):
 
         layout.addStretch()
         return group
+
+    def _on_frontend_changed(self, index: int):
+        """Switch HUD frontend live (arc reactor / smoke face)."""
+        fe = "smoke" if index == 1 else "arc"
+        if self.agent_config:
+            self.agent_config.frontend = fe
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "_apply_frontend"):
+            parent._frontend = fe
+            parent._apply_frontend()
 
     def _on_palette_changed(self, index: int):
         """Called when the user selects a different palette in the appearance tab."""
@@ -1405,6 +1434,8 @@ class SettingsDialog(QDialog):
             # Palette and contrast
             if hasattr(self, "palette_combo"):
                 self.agent_config.palette_index = self.palette_combo.currentIndex()
+            if hasattr(self, "frontend_combo") and self.agent_config:
+                self.agent_config.frontend = self.frontend_combo.currentData()
             if hasattr(self, "contrast_slider"):
                 self.agent_config.contrast_boost = self.contrast_slider.value()
 
@@ -1445,6 +1476,7 @@ class SettingsDialog(QDialog):
             self.app_config.wake_word_threshold = self.agent_config.wake_word_threshold
             self.app_config.palette_index = self.agent_config.palette_index
             self.app_config.contrast_boost = self.agent_config.contrast_boost
+            self.app_config.frontend = getattr(self.agent_config, "frontend", "arc")
 
         # Persist to disk
         if self.app_config:

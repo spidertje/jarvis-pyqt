@@ -7,6 +7,7 @@ Uses sounddevice + numpy for playback.
 
 import logging
 import threading
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -108,6 +109,7 @@ class AudioPlayer:
         )
 
         self._stop_flag = False
+        self._last_rms_t = 0.0
         try:
             with self._lock:
                 self._stream = self._sd.OutputStream(
@@ -125,7 +127,15 @@ class AudioPlayer:
                 if self._stop_flag:
                     logger.info("Audio playback interrupted by stop()")
                     break
-                self._stream.write(audio_float[i : i + chunk])
+                seg = audio_float[i : i + chunk]
+                self._stream.write(seg)
+                # lip-sync tap: RMS of just-played chunk (viewed by GUI thread)
+                try:
+                    rms = float(np.sqrt(np.mean(seg * seg)))
+                    self._last_rms = min(1.0, rms * 3.0)
+                    self._last_rms_t = time.monotonic()
+                except Exception:
+                    pass
 
             self._cleanup_stream()
 
@@ -154,3 +164,16 @@ class AudioPlayer:
     @property
     def is_playing(self) -> bool:
         return self._playing
+
+    def get_level(self) -> tuple:
+        """Return (rms_level 0..1, is_playing) from the last written chunk.
+
+        Levels older than 0.5s decay to 0 so a stalled device doesn't
+        freeze the mouth open. Safe to call from the GUI thread.
+        """
+        lvl = getattr(self, "_last_rms", 0.0)
+        ts = getattr(self, "_last_rms_t", 0.0)
+        age = time.monotonic() - ts
+        if age > 0.5:
+            lvl = 0.0
+        return lvl, self._playing

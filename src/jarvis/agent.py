@@ -22,6 +22,7 @@ from .chat import ChatClient, ChatConfig
 from .profile import PALETTE_HUES, Profile, ProfileManager
 from .state import JarvisState
 from .streaming import SentenceBuffer, split_sentences
+from .emotion import EMOTION_PROMPT, EmotionTagFilter, classify_emotion, parse_emotion
 from .stt import WhisperSTT
 from .stt import WyomingConfig as STTConfig
 from .tts import PiperTTS
@@ -43,6 +44,8 @@ class AgentConfig:
     tts: TTSConfig = field(default_factory=TTSConfig)
     # Audio
     audio: AudioConfig = field(default_factory=AudioConfig)
+    # HUD frontend ('arc' | 'smoke')
+    frontend: str = "arc"
     # Profile manager — read from env vars only, no hardcoded fallbacks
     profile_db_host: str | None = None
     profile_db_port: int | None = None
@@ -282,7 +285,25 @@ class JarvisAgent:
             for cb in self._state_callbacks:
                 cb(new_state)
 
-    def get_system_prompt(self) -> str:
+    def _supports_emotion(self) -> bool:
+        """True when the attached frontend understands emotion tags (smoke face)."""
+        return self.hud is not None and hasattr(self.hud, "set_emotion")
+
+    def _chat_system_prompt(self) -> str:
+        """System prompt plus the emotion-tag instruction for smoke frontend."""
+        base = self._system_prompt
+        if self._supports_emotion():
+            return base + EMOTION_PROMPT
+        return base
+
+    def _apply_emotion(self, name: str | None):
+        if name and self._supports_emotion():
+            try:
+                self.hud.set_emotion(name)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"set_emotion failed: {e}")
+
+    def get_system_prompt(self):
         """Get the current system prompt (profile-specific or default)."""
         return self._system_prompt
 
@@ -493,18 +514,24 @@ class JarvisAgent:
 
         queue: asyncio.Queue = asyncio.Queue()
         buffer = SentenceBuffer()
+        emo_filter = EmotionTagFilter()
         spoken: list[str] = []
         streamed_any = False
 
         def on_token(token: str) -> None:
-            """Stream callback (event-loop thread): buffer → complete sentences."""
+            """Stream callback (event-loop thread): strip emo tag → sentences."""
             nonlocal streamed_any
             if self._stop_evt.is_set():
                 return
             streamed_any = True
-            self._emit_reply_text(token)
-            for sentence in buffer.feed(token):
-                queue.put_nowait(sentence)
+            clean = emo_filter.feed(token)
+            if clean:
+                if emo_filter.emotion and not producer._emo_applied:
+                    producer._emo_applied = True
+                    self._apply_emotion(emo_filter.emotion)
+                self._emit_reply_text(clean)
+                for sentence in buffer.feed(clean):
+                    queue.put_nowait(sentence)
 
         async def producer() -> None:
             """Stream the LLM reply; queue sentences; always end with sentinel."""
@@ -512,20 +539,30 @@ class JarvisAgent:
                 reply = await self.chat.chat(
                     self._messages,
                     stream=True,
-                    system_prompt=self._system_prompt,
+                    system_prompt=self._chat_system_prompt(),
                     on_token=on_token,
                     on_tool_call=lambda key, desc: self._emit_tool_call(key, desc),
                 )
                 if self._stop_evt.is_set():
                     return
                 if streamed_any:
+                    if not producer._emo_applied and reply:
+                        producer._emo_applied = True
+                        self._apply_emotion(classify_emotion(reply))
                     # Streamed tokens — sentences already queued via on_token.
-                    # Release the final sentence still held in the buffer.
+                    # Release any buffered emotion-tag residue, then the tail.
+                    rest = emo_filter.flush()
+                    if rest:
+                        self._emit_reply_text(rest)
+                        for sentence in buffer.feed(rest):
+                            queue.put_nowait(sentence)
                     tail = buffer.flush()
                     if tail:
                         queue.put_nowait(tail)
                 elif reply:
-                    # Endpoint ignored `stream` — one-shot fallback: chunk it.
+                    # Endpoint ignored `stream` — one-shot fallback: strip tag, chunk.
+                    emo_tag, reply = parse_emotion(reply)
+                    self._apply_emotion(emo_tag or classify_emotion(reply))
                     for s in split_sentences(reply):
                         if self._stop_evt.is_set():
                             break
@@ -559,6 +596,7 @@ class JarvisAgent:
             if listener is not None:
                 listener.set_active(False)
 
+        producer._emo_applied = False
         self._producer_task = producer_task = asyncio.create_task(producer())
         speaker_task = asyncio.create_task(speaker())
         try:

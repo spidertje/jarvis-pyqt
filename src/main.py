@@ -40,6 +40,7 @@ from jarvis.config import AppConfig
 from jarvis.face import FaceConfig
 from jarvis.face_screen import FaceRecScreen
 from jarvis.hud_overlay import HUDOverlay
+from jarvis.smoke_face import SmokeFaceHUD
 from jarvis.hud_panels import ApprovalCard, HUDPanels
 from jarvis.profile import PALETTE_HUES, Profile
 from jarvis.settings import SettingsDialog
@@ -242,10 +243,11 @@ class JarvisApp(QWidget):
         super().__init__()
 
         # HUD overlay (background layer — visible underneath face screen)
-        self.hud = HUDOverlay()
-        self.hud.resize(800, 600)
-        self.hud.move(0, 0)
-        self.hud.show()
+        self.hud_arc = HUDOverlay()
+        self.hud_smoke = SmokeFaceHUD()
+        self._frontend = "arc"  # refined in _setup after AppConfig load
+        self.hud = None
+        self._apply_frontend()
 
         # Live panels: transcript / streaming reply / tool activity + approval card
         self.panels = HUDPanels()
@@ -285,6 +287,7 @@ class JarvisApp(QWidget):
         # Appearance
         agent_config.palette_index = self.app_config.palette_index
         agent_config.contrast_boost = self.app_config.contrast_boost
+        agent_config.frontend = self.app_config.frontend
         # Assistant name
         agent_config.assistant_name = self.app_config.assistant_name
         # STT
@@ -294,7 +297,12 @@ class JarvisApp(QWidget):
         agent_config.wake_word_enabled = self.app_config.wake_word_enabled
         agent_config.wake_word_threshold = self.app_config.wake_word_threshold
 
+        self._frontend = self.app_config.frontend or "arc"
+        self._apply_frontend()
         self.agent = JarvisAgent(agent_config, hud=self.hud)
+        # Lip-sync source: AudioPlayer chunk RMS (polled on GUI thread)
+        if hasattr(self.hud, "set_level_source"):
+            self.hud.set_level_source(self.agent.audio.get_level)
         # Apply palette hue from agent config if available
         if hasattr(agent_config, "palette_index") and agent_config.palette_index is not None:
             # Map index to hue (same list as the Appearance settings tab)
@@ -576,6 +584,49 @@ class JarvisApp(QWidget):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Wake word start failed (push-to-talk still works): {e}")
 
+    def _apply_frontend(self):
+        """Swap visible HUD frontend ('arc' | 'smoke'), keeping state in sync."""
+        for h in (self.hud_arc, self.hud_smoke):
+            h.hide()
+        self.hud = self.hud_smoke if self._frontend == "smoke" else self.hud_arc
+        self.hud.resize(800, 600)
+        self.hud.move(0, 0)
+        self.hud.show()
+        # re-apply appearance to the newly visible HUD
+        try:
+            idx = self.agent.config.palette_index
+            if 0 <= idx < len(PALETTE_HUES):
+                self.hud.set_palette_hue(PALETTE_HUES[idx])
+            self.hud.set_contrast_factor(self.agent.config.contrast_boost / 100.0)
+            self.hud.set_assistant_name(self.agent.config.assistant_name)
+            self.hud.set_state(self.agent.state)
+            if hasattr(self.hud, "set_level_source"):
+                self.hud.set_level_source(self.agent.audio.get_level)
+            if self.agent._active_profile:
+                self.hud.set_profile(self.agent._active_profile.name,
+                                     self.agent._active_profile.accent_hue)
+        except Exception as e:  # noqa: BLE001 (pre-agent startup call)
+            logger.debug(f"_apply_frontend sync deferred: {e}")
+        if self._frontend == "smoke":
+            self.hud.raise_()
+
+    def _cycle_frontend(self):
+        self._frontend = "arc" if self._frontend == "smoke" else "smoke"
+        try:
+            self.app_config.frontend = self._frontend
+            self.app_config.save()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"frontend persist failed: {e}")
+        self._apply_frontend()
+        logger.info(f"Frontend switched to: {self._frontend}")
+
+    def keyPressEvent(self, event):
+        """F2 cycles the HUD frontend (arc reactor / smoke face)."""
+        if event.key() == Qt.Key.Key_F2:
+            self._cycle_frontend()
+            return
+        super().keyPressEvent(event)
+
     def _on_state_change(self, state: JarvisState):
         """Update UI on state change."""
         self.hud.set_state(state)
@@ -781,6 +832,7 @@ class JarvisApp(QWidget):
         self.app_config.stt_sensitivity = self.agent.config.silence_threshold
         self.app_config.palette_index = self.agent.config.palette_index
         self.app_config.contrast_boost = self.agent.config.contrast_boost
+        self.app_config.frontend = self._frontend
 
         # Save to config file
         try:

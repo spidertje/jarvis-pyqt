@@ -193,7 +193,7 @@ class AppConfig:
     # Appearance
     palette_index: int = 0
     contrast_boost: int = 100
-
+    frontend: str = "arc"  # 'arc' | 'smoke'
     # Assistant
     assistant_name: str = "Jarvis"
 
@@ -255,6 +255,7 @@ class AppConfig:
             ),
             palette_index=_env_int("JARVIS_PALETTE_INDEX", cls.palette_index),
             contrast_boost=_env_int("JARVIS_CONTRAST_BOOST", cls.contrast_boost),
+            frontend=os.environ.get("JARVIS_FRONTEND", cls.frontend),
             assistant_name=os.environ.get("JARVIS_ASSISTANT_NAME", "") or cls.assistant_name,
             silence_timeout=_env_float("JARVIS_SILENCE_TIMEOUT", cls.silence_timeout),
             stt_sensitivity=_env_float("JARVIS_STT_SENSITIVITY", cls.stt_sensitivity),
