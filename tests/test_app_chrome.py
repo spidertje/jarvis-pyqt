@@ -17,9 +17,18 @@ def app_window(qtbot):
 
     window = main_mod.JarvisApp()
     qtbot.addWidget(window)
-    window._quitting = True  # real close, not hide-to-tray
     yield window
+    # Deterministic teardown: stop timers + camera thread BEFORE close so no
+    # Qt timer callback fires against half-deleted widgets (offscreen CI
+    # segfaulted on exactly this race).
     window._quitting = True
+    window._closing = True
+    if getattr(window, "_face_timeout", None) is not None:
+        window._face_timeout.stop()
+    if window._transition_timer is not None:
+        window._transition_timer.stop()
+    window.face_thread.stop()
+    window.face_thread.wait(3000)
     window.close()
 
 

@@ -871,14 +871,26 @@ class JarvisApp(QWidget):
 
     def _check_transition(self):
         """Check if the face screen fade-out is complete."""
-        if self.face_screen.is_fade_complete:
+        if getattr(self, "_closing", False):
+            return
+        try:
+            done = self.face_screen.is_fade_complete
+        except RuntimeError:
+            return  # widgets already torn down (shutdown race)
+        if done:
             if self._transition_timer is not None:
                 self._transition_timer.stop()
                 self._transition_timer = None
-            self.face_thread.stop()  # Stop camera + sampling loop
-            self.face_screen.hide()
-            self.hint_label.hide()
-            self.bottom_bar.show()
+            try:
+                self.face_thread.stop()  # Stop camera + sampling loop
+            except RuntimeError:
+                pass
+            try:
+                self.face_screen.hide()
+                self.hint_label.hide()
+                self.bottom_bar.show()
+            except RuntimeError:
+                return
             logger.info("Face recognition complete, showing HUD")
 
     # ── Face enrollment handlers ──────────────────────────────────────
@@ -1088,6 +1100,13 @@ class JarvisApp(QWidget):
     def closeEvent(self, event):
         """Clean shutdown."""
         # Tray-close = hide to tray unless Quit was used.
+        self._closing = True
+        # Stop face/transition timers before anything else can race with teardown.
+        if getattr(self, "_face_timeout", None) is not None:
+            self._face_timeout.stop()
+        if self._transition_timer is not None:
+            self._transition_timer.stop()
+            self._transition_timer = None
         if not getattr(self, "_quitting", False) and getattr(self, "tray", None) is not None and self.tray.isVisible():
             event.ignore()
             self.hide()
