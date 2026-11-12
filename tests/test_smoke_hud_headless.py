@@ -9,11 +9,9 @@ from PyQt6.QtCore import QCoreApplication
 
 app = QApplication(sys.argv)
 
-# load the package WITHOUT __init__ (avoid cv2/pymysql deps unused by smoke HUD)
-import types
-pkg = types.ModuleType("jarvis")
-pkg.__path__ = [os.path.join(os.getcwd(), "src", "jarvis")]
-sys.modules["jarvis"] = pkg
+# The package __init__ is lazy (PEP 562), so plain imports are cheap now and
+# pull in only what is used. No fake-module shim needed (the old shim poisoned
+# sys.modules["jarvis"] for every later test and broke monkeypatch targets).
 from jarvis.smoke_face import SmokeFaceHUD
 from jarvis.state import JarvisState
 
