@@ -4,6 +4,7 @@ Jarvis Chat — OpenAI-compatible API client.
 Talks to any OpenAI-format LLM endpoint (local Ollama, LM Studio, Hindsight, etc.)
 """
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -32,6 +33,21 @@ class ChatClient:
     def __init__(self, config: ChatConfig | None = None):
         self.config = config or ChatConfig()
         self._session: aiohttp.ClientSession | None = None
+        # Human-readable cause of the most recent failed request (None = ok).
+        # Surfaced by the UI so "✗ Error" becomes actionable.
+        self.last_error: str | None = None
+
+    def _classify_error(self, exc: Exception) -> str:
+        target = self.config.base_url or "(no base_url configured)"
+        if isinstance(exc, asyncio.TimeoutError):
+            self.last_error = f"LLM timed out: {target}"
+        elif isinstance(exc, aiohttp.ClientConnectorError):
+            self.last_error = f"LLM endpoint unreachable: {target}"
+        elif isinstance(exc, aiohttp.ClientResponseError):
+            self.last_error = f"LLM HTTP {exc.status}: {target}"
+        else:
+            self.last_error = f"LLM error: {exc} ({target})"
+        return self.last_error
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -93,25 +109,32 @@ class ChatClient:
                     session, payload, on_token=on_token, on_tool_call=on_tool_call
                 )
                 if result is not None:
+                    self.last_error = None
                     return result
                 # Endpoint ignored `stream` (or sent nothing) — fall back to one-shot
                 logger.info("Stream returned nothing — falling back to non-streaming")
-                return await self._nonstream_chat(session, {**payload, "stream": False})
-            return await self._nonstream_chat(session, payload)
+                result = await self._nonstream_chat(session, {**payload, "stream": False})
+            else:
+                result = await self._nonstream_chat(session, payload)
+            if result is not None:
+                self.last_error = None
+            return result
         except Exception as e:
-            logger.error(f"Chat error: {e}")
+            logger.error(f"Chat error: {self._classify_error(e)}")
             return None
 
     async def _nonstream_chat(self, session: aiohttp.ClientSession, payload: dict) -> str | None:
         """Get a complete response in one shot."""
         if not self.config.base_url:
-            logger.error("No LLM base_url configured")
+            self.last_error = "LLM base_url not configured — open Settings"
+            logger.error(self.last_error)
             return None
         url = f"{self.config.base_url}/chat/completions"
         async with session.post(url, json=payload) as resp:
             if resp.status != 200:
                 body = await resp.text()
-                logger.error(f"Chat API returned {resp.status}: {body}")
+                self.last_error = f"LLM HTTP {resp.status}: {body[:120]}"
+                logger.error(self.last_error)
                 return None
             data = await resp.json()
             return data["choices"][0]["message"]["content"]

@@ -396,6 +396,10 @@ class JarvisApp(QWidget):
         # event loop is up (see _init_services). Fires → run one voice cycle.
         self.agent.on_wake_word(self._on_wake_word_fired)
 
+        # Service failures (STT/TTS/LLM unreachable, timeouts) → show the
+        # actionable reason in the status bar instead of silent degradation.
+        self.agent.on_error(lambda msg: self._status_updated.emit(f"⚠ {msg}"))
+
         # Background tasks
         self._running = False
         self._voice_task = None
@@ -916,7 +920,7 @@ class JarvisApp(QWidget):
         """Main voice loop."""
         while self._running:
             try:
-                await self.agent._run_voice()
+                await self.agent.run_voice()
             except Exception as e:
                 import traceback
 
@@ -939,7 +943,7 @@ class JarvisApp(QWidget):
 
         async def _run_once():
             try:
-                await self.agent._run_voice()
+                await self.agent.run_voice()
             except Exception as e:  # noqa: BLE001
                 logger.error(f"Wake-word voice cycle error: {e}")
 
@@ -958,7 +962,11 @@ class JarvisApp(QWidget):
     async def _send_chat(self, text: str):
         """Send a text message and get response (with optional TTS)."""
         reply = await self.agent.chat_text_and_speak(text)
-        self._status_updated.emit("✓" if reply else "✗ Error")
+        if reply:
+            self._status_updated.emit("✓")
+        else:
+            reason = self.agent.chat.last_error or "LLM request failed — open Settings"
+            self._status_updated.emit(f"✗ {reason}")
 
     def closeEvent(self, event):
         """Clean shutdown."""

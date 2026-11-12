@@ -69,6 +69,10 @@ class AgentConfig:
     wake_word_threshold: float = 0.5
     wake_word_patience: int = 2
     wake_word_cooldown_s: float = 1.5
+    # Voice-cycle hard timeout (seconds). If the entire listen→think→speak cycle
+    # hangs for this long (network hang, service wedged), the cycle is cancelled
+    # and an error is surfaced. 0 disables.
+    voice_cycle_timeout: float = 90.0
     palette_index: int | None = None  # index into appearance palette list
     # Default system prompt (used when no profile is active)
     # Loaded from SOUL.md if present, otherwise fallback
@@ -204,6 +208,25 @@ class JarvisAgent:
         # Wake word (hands-free) — started on demand, active only while IDLE
         self._wake_word: WakeWordDetector | None = None
         self._wake_word_callbacks: list[Callable] = []
+
+        # Service-failure reporting: callbacks receive a human-readable string
+        # ("LLM endpoint unreachable: http://…") — the UI shows it verbatim.
+        self._error_callbacks: list[Callable[[str], None]] = []
+
+    # ── Error reporting ──────────────────────────────────────────────
+
+    def on_error(self, callback: Callable[[str], None]) -> None:
+        """Register a callback fired with a human-readable service error."""
+        self._error_callbacks.append(callback)
+
+    def _report_error(self, message: str) -> None:
+        """Surface a service failure to the UI (and log it)."""
+        logger.error(f"SERVICE ERROR: {message}")
+        for cb in self._error_callbacks:
+            try:
+                cb(message)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Error callback failed: {e}")
 
     # ── HUD thread-safety ────────────────────────────────────────────
 
@@ -509,7 +532,33 @@ class JarvisAgent:
 
     # ── Voice cycle (streaming) ───────────────────────────────────────
 
+    async def run_voice(self) -> None:
+        """Public entry: one voice cycle with a hard overall timeout.
+
+        If any step hangs (network stall to STT/LLM/TTS), the whole cycle is
+        cancelled after ``config.voice_cycle_timeout`` seconds and a
+        human-readable error is reported instead of the app sitting in
+        LISTENING/THINKING forever.
+        """
+        timeout = float(getattr(self.config, "voice_cycle_timeout", 0) or 0)
+        try:
+            if timeout > 0:
+                await asyncio.wait_for(self._run_voice_inner(), timeout=timeout)
+            else:
+                await self._run_voice_inner()
+        except asyncio.TimeoutError:
+            self.interrupt()
+            self._report_error(
+                f"Voice cycle timed out after {timeout:.0f}s — "
+                "check STT/LLM/TTS services (Settings)"
+            )
+            self._set_state(JarvisState.IDLE)
+
     async def _run_voice(self):
+        """Alias kept for callers/tests; use run_voice() for timeout safety."""
+        return await self._run_voice_inner()
+
+    async def _run_voice_inner(self):
         """Run a single voice cycle: listen → think (stream) → speak.
 
         The reply is spoken sentence-by-sentence as the LLM streams it, so the
@@ -529,6 +578,10 @@ class JarvisAgent:
         if not text:
             if self.hud:
                 self._hud(lambda: self.hud.set_voice_level(0.0))
+            if not self.stt._connected:
+                host = getattr(self.stt.config, "host", "?")
+                port = getattr(self.stt.config, "port", "?")
+                self._report_error(f"STT unreachable — no speech recognized (server {host}:{port})")
             self._set_state(JarvisState.IDLE)
             return
 
@@ -597,6 +650,7 @@ class JarvisAgent:
                 raise
             except Exception as e:
                 logger.error(f"Chat stream error: {e}")
+                self._report_error(self.chat.last_error or f"LLM request failed: {e}")
             finally:
                 queue.put_nowait(None)
 
@@ -615,6 +669,9 @@ class JarvisAgent:
                     audio = await self.tts.speak(sentence)
                 except Exception as e:
                     logger.error(f"TTS error: {e}")
+                    host = getattr(self.tts.config, "host", "?")
+                    port = getattr(self.tts.config, "port", "?")
+                    self._report_error(f"TTS failed: {e} (server {host}:{port})")
                     break
                 if audio and not self._stop_evt.is_set():
                     await asyncio.to_thread(self.audio.play, audio)
