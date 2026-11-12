@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import QByteArray, QEasingCurve, QPoint, QPropertyAnimation, QSettings, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QByteArray, QPoint, QSettings, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QIcon, QImage, QPalette
 from PyQt6.QtWidgets import (
     QApplication,
@@ -530,23 +530,6 @@ class JarvisApp(QWidget):
         # ── System tray: quit / hide / voice / profiles ──
         self._make_tray()
 
-    def _fade_in(self, w):
-        """Opacity fade-in for child widgets (needs QGraphicsOpacityEffect —
-        windowOpacity only applies to top-level windows)."""
-        from PyQt6.QtWidgets import QGraphicsOpacityEffect
-
-        effect = QGraphicsOpacityEffect(w)
-        w.setGraphicsEffect(effect)
-        w.show()
-        anim = QPropertyAnimation(effect, b"opacity", self)
-        anim.setDuration(350)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
-        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        anim.start()
-        self._fade_anims = getattr(self, "_fade_anims", [])
-        self._fade_anims.append(anim)
-
     def _set_mic_icon(self):
         t = self._theme
         self.mic_btn.setIcon(svg_icon("mic" if not self._running else "stop", t.text, 20))
@@ -895,7 +878,7 @@ class JarvisApp(QWidget):
             self.face_thread.stop()  # Stop camera + sampling loop
             self.face_screen.hide()
             self.hint_label.hide()
-            self._fade_in(self.bottom_bar)
+            self.bottom_bar.show()
             logger.info("Face recognition complete, showing HUD")
 
     # ── Face enrollment handlers ──────────────────────────────────────
