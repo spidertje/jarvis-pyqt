@@ -231,6 +231,19 @@ class SettingsDialog(QDialog):
         """)
         return lbl, field
 
+    def _reveal_icon(self, revealed: bool):
+        from jarvis.icons import icon as svg_icon
+
+        return svg_icon("eye_off" if revealed else "eye", "#9fb4c8", 16)
+
+    def _toggle_reveal(self, field, action):
+        if field.echoMode() == QLineEdit.EchoMode.Password:
+            field.setEchoMode(QLineEdit.EchoMode.Normal)
+            action.setIcon(self._reveal_icon(revealed=True))
+        else:
+            field.setEchoMode(QLineEdit.EchoMode.Password)
+            action.setIcon(self._reveal_icon(revealed=False))
+
     def _build_llm_tab(self):
         """LLM configuration tab."""
         config = self.agent_config
@@ -249,6 +262,17 @@ class SettingsDialog(QDialog):
         for label, default, placeholder in fields:
             lbl, field = self._make_field(label, placeholder, default)
             field.setPlaceholderText(placeholder)
+            if label == "API Key:":
+                # Mask secrets; a trailing action toggles reveal (audit G-D16).
+                field.setEchoMode(QLineEdit.EchoMode.Password)
+                act = field.addAction(
+                    self._reveal_icon(revealed=False),
+                    QLineEdit.ActionPosition.TrailingPosition,
+                )
+                act.setToolTip("Show / hide key")
+                act.triggered.connect(
+                    lambda _=False, f=field: self._toggle_reveal(f, act)
+                )
             layout.addWidget(lbl)
             layout.addWidget(field)
 
@@ -712,6 +736,14 @@ class SettingsDialog(QDialog):
             if i == len(fields) - 1:  # Last field is password
                 self.password_field = field
                 self.password_field.setEchoMode(QLineEdit.EchoMode.Password)
+                act = field.addAction(
+                    self._reveal_icon(revealed=False),
+                    QLineEdit.ActionPosition.TrailingPosition,
+                )
+                act.setToolTip("Show / hide password")
+                act.triggered.connect(
+                    lambda _=False, f=field, a=act: self._toggle_reveal(f, a)
+                )
 
         layout.addStretch()
         return group
