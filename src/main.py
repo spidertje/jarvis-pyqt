@@ -238,6 +238,17 @@ class JarvisApp(QWidget):
     _panel_reply_text = pyqtSignal(str)
     _panel_tool_call = pyqtSignal(str, str)
     _approval_requested = pyqtSignal(str, str)
+    # Agent state changes (payload: JarvisState) — loop thread → GUI thread.
+    _state_changed = pyqtSignal(object)
+    # Bridges agent HUD mutations from ANY thread (audio callbacks included)
+    # → executed on the GUI thread. Payload is a zero-arg callable.
+    _hud_call = pyqtSignal(object)
+
+    def _run_hud_call(self, fn) -> None:
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"HUD dispatch failed: {e}")
 
     def __init__(self):
         super().__init__()
@@ -358,8 +369,16 @@ class JarvisApp(QWidget):
         # Signal: user skipped face enrollment
         self.face_screen.skip_requested.connect(self._on_face_screen_skip)
 
-        # State change tracking
-        self.agent.on_state_change(self._on_state_change)
+        # State change tracking — agent fires this from the event-loop thread;
+        # _on_state_change touches Qt widgets, so bridge via a queued signal.
+        self._state_changed.connect(self._on_state_change)
+        self.agent.on_state_change(lambda s: self._state_changed.emit(s))
+
+        # HUD thread-safety: route ALL agent→HUD mutations through a queued
+        # Qt signal so audio-thread callbacks (wake word, barge-in) never
+        # touch Qt widgets off the GUI thread.
+        self._hud_call.connect(self._run_hud_call)
+        self.agent.bind_hud_dispatcher(lambda fn: self._hud_call.emit(fn))
 
         # Live panels: transcript / streaming reply / tool-activity feed.
         # Agent callbacks fire on the event-loop thread — bridge them to the

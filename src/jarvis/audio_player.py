@@ -46,6 +46,7 @@ class AudioPlayer:
         self._playing = False
         self._sd = None
         self._stop_flag = False
+        self._stop_pending = False
         self._lock = threading.Lock()
         self._init()
 
@@ -109,6 +110,12 @@ class AudioPlayer:
         )
 
         self._stop_flag = False
+        if self._stop_pending:
+            # stop() fired after the last sentence finished but before this
+            # play() started (barge-in/STOP race) — discard instead of playing.
+            self._stop_pending = False
+            logger.info("Audio playback skipped — stop() arrived before play()")
+            return
         self._last_rms_t = 0.0
         try:
             with self._lock:
@@ -159,6 +166,10 @@ class AudioPlayer:
     def stop(self):
         """Stop current playback (interrupts chunked writes promptly)."""
         self._stop_flag = True
+        # If no stream is active, remember the stop so a play() about to start
+        # (TTS finished, to_thread scheduled) is discarded instead of playing.
+        if self._stream is None:
+            self._stop_pending = True
         self._cleanup_stream()
 
     @property

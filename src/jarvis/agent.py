@@ -177,6 +177,12 @@ class JarvisAgent:
         self._active_profile: Profile | None = None
         self._profile_callbacks: list[Callable] = []
 
+        # HUD thread-safety: dispatcher bound by the GUI (main.py) that queues
+        # a callable onto the Qt GUI thread (pyqtSignal emit). Without it, HUD
+        # calls run on the caller's thread — fine from the GUI thread, but NOT
+        # when fired from PortAudio audio callbacks (wake word / barge-in).
+        self._hud_dispatcher: Callable[[Callable], None] | None = None
+
         # Conversation history (per profile)
         self._messages: list[dict[str, str]] = []
 
@@ -198,6 +204,26 @@ class JarvisAgent:
         # Wake word (hands-free) — started on demand, active only while IDLE
         self._wake_word: WakeWordDetector | None = None
         self._wake_word_callbacks: list[Callable] = []
+
+    # ── HUD thread-safety ────────────────────────────────────────────
+
+    def bind_hud_dispatcher(self, dispatcher: Callable[[Callable], None]) -> None:
+        """Bind a function that schedules a callable on the Qt GUI thread.
+
+        ``dispatcher(fn)`` is invoked with a zero-arg callable; it must run
+        ``fn()`` on the GUI thread (e.g. via a queued pyqtSignal). Safe to
+        call from any thread.
+        """
+        self._hud_dispatcher = dispatcher
+
+    def _hud(self, fn: Callable[[], None]) -> None:
+        """Apply a HUD mutation on the GUI thread, whatever thread we're on."""
+        if not self.hud:
+            return
+        if self._hud_dispatcher is not None:
+            self._hud_dispatcher(fn)
+        else:
+            fn()
 
     def on_state_change(self, callback: Callable):
         """Register a callback for state changes."""
@@ -298,10 +324,12 @@ class JarvisAgent:
 
     def _apply_emotion(self, name: str | None):
         if name and self._supports_emotion():
-            try:
-                self.hud.set_emotion(name)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"set_emotion failed: {e}")
+            def _apply():
+                try:
+                    self.hud.set_emotion(name)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"set_emotion failed: {e}")
+            self._hud(_apply)
 
     def get_system_prompt(self):
         """Get the current system prompt (profile-specific or default)."""
@@ -374,8 +402,7 @@ class JarvisAgent:
 
     def _on_voice_level(self, level: float):
         """Update HUD voice bars from microphone amplitude (called during STT listen)."""
-        if self.hud:
-            self.hud.set_voice_level(level)
+        self._hud(lambda: self.hud.set_voice_level(level))
 
     # ── Barge-in ─────────────────────────────────────────────────────
 
@@ -446,8 +473,7 @@ class JarvisAgent:
     def _on_wake_word(self) -> None:
         """Wake word fired (audio thread) — notify registered callbacks."""
         logger.info("Wake word fired — starting voice cycle")
-        if self.hud:
-            self.hud.set_state(JarvisState.LISTENING)
+        self._hud(lambda: self.hud.set_state(JarvisState.LISTENING))
         for cb in self._wake_word_callbacks:
             try:
                 cb()
@@ -479,7 +505,7 @@ class JarvisAgent:
         if task is not None and not task.done():
             task.cancel()
         if self.hud:
-            self.hud.set_voice_level(0.0)
+            self._hud(lambda: self.hud.set_voice_level(0.0))
 
     # ── Voice cycle (streaming) ───────────────────────────────────────
 
@@ -502,7 +528,7 @@ class JarvisAgent:
         logger.info(f"STT: Listen returned: {text!r}")
         if not text:
             if self.hud:
-                self.hud.set_voice_level(0.0)
+                self._hud(lambda: self.hud.set_voice_level(0.0))
             self._set_state(JarvisState.IDLE)
             return
 
@@ -604,7 +630,7 @@ class JarvisAgent:
         finally:
             self._producer_task = None
             if self.hud:
-                self.hud.set_voice_level(0.0)
+                self._hud(lambda: self.hud.set_voice_level(0.0))
 
         interrupted = self.stop_requested
 
