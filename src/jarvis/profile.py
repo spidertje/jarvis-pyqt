@@ -157,7 +157,7 @@ class ProfileManager:
         self._active_name: str | None = None
 
     def _get_db(self) -> pymysql.Connection:
-        """Get or create DB connection."""
+        """Get or create DB connection (auto-reconnects after server restarts)."""
         if self._db is None or not self._db.open:
             self._db = pymysql.connect(
                 host=self.db_host,
@@ -167,6 +167,25 @@ class ProfileManager:
                 database=self.db_name or "jarvis",
                 cursorclass=pymysql.cursors.DictCursor,
             )
+        else:
+            # Drop/re-open dead sockets (MariaDB restart, idle timeout) so
+            # profiles keep working without an app restart.
+            try:
+                self._db.ping(reconnect=True)
+            except Exception as e:
+                logger.warning(f"DB ping failed, reconnecting: {e}")
+                try:
+                    self._db = pymysql.connect(
+                        host=self.db_host,
+                        port=self.db_port,
+                        user=self.db_user,
+                        password=self.db_password or "",
+                        database=self.db_name or "jarvis",
+                        cursorclass=pymysql.cursors.DictCursor,
+                    )
+                except Exception as e2:
+                    logger.error(f"DB reconnect failed: {e2}")
+                    raise
         return self._db
 
     def load_all(self) -> list[Profile]:

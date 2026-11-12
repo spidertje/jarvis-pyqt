@@ -1,20 +1,20 @@
 -- Face model table for jarvis-vision / face recognition
--- Stored in MariaDB jarvis database (192.168.55.41:3306)
+-- Stored in MariaDB jarvis database (configurable via JARVIS_DB_HOST)
+-- Schema MUST match FaceRecognizer._get_db() (name-as-PK): the code reads
+-- and writes rows as (name, model) — a surrogate id here would drift.
 
 CREATE TABLE IF NOT EXISTS face_model (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(100) NOT NULL UNIQUE,
-    model BLOB NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
+    name VARCHAR(100) PRIMARY KEY,
+    model LONGBLOB NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Profiles table for Jarvis face recognition + profile switching
--- Stored in MariaDB jarvis database (192.168.55.41:3306)
+-- Stored in MariaDB jarvis database (configurable via JARVIS_DB_HOST)
 
 CREATE TABLE IF NOT EXISTS profiles (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100) NOT NULL UNIQUE,
+    face_name VARCHAR(100) UNIQUE NULL,
     assistant_name VARCHAR(50) NOT NULL DEFAULT 'Jarvis',
     assistant_full TEXT NOT NULL DEFAULT '',
     system_prompt TEXT NOT NULL DEFAULT 'You are Jarvis, a helpful AI assistant.',
