@@ -22,18 +22,23 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QPalette
+from PyQt6.QtCore import QByteArray, QEasingCurve, QPoint, QPropertyAnimation, QSettings, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QAction, QColor, QIcon, QImage, QPalette
 from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
+
+from jarvis import theme as app_theme
+from jarvis.icons import icon as svg_icon, svg as svg_markup
 
 from jarvis.agent import AgentConfig, JarvisAgent
 from jarvis.config import AppConfig
@@ -259,8 +264,9 @@ class JarvisApp(QWidget):
         self.hud = None
         self._apply_frontend()
 
-        # Live panels: transcript / streaming reply / tool activity
-        self.panels = HUDPanels()
+        # Live panels: scrolling transcript / streaming reply / tool activity
+        self._theme = app_theme.DEFAULT
+        self.panels = HUDPanels(theme=self._theme)
 
         # Face recognition screen (shown on startup, fades out when face is recognized)
         self.face_screen = FaceRecScreen()
@@ -357,6 +363,12 @@ class JarvisApp(QWidget):
         self._face_timeout.timeout.connect(self._on_face_timeout)
         self._face_timeout.start(10000)
 
+        # Background-task state (before UI: mic icon reads _running)
+        self._running = False
+        self._voice_task = None
+        self._quitting = False
+        self._drag_offset = None
+
         # UI controls (foreground layer)
         self._setup_ui()
 
@@ -396,10 +408,6 @@ class JarvisApp(QWidget):
         # actionable reason in the status bar instead of silent degradation.
         self.agent.on_error(lambda msg: self._status_updated.emit(f"⚠ {msg}"))
 
-        # Background tasks
-        self._running = False
-        self._voice_task = None
-
         # Start face detection thread
         self.face_thread.start()
 
@@ -415,147 +423,251 @@ class JarvisApp(QWidget):
     def _setup_ui(self):
         """Set up the foreground UI controls."""
         self.setWindowTitle(getattr(self.agent.config, "assistant_name", "Jarvis"))
-        self.resize(800, 600)
+
+        # Restore size/position from the last run (QSettings).
+        self._settings = QSettings("Jarvis", "JarvisApp")
+        geo = self._settings.value("geometry")
+        if isinstance(geo, QByteArray):
+            self.restoreGeometry(geo)
+        else:
+            self.resize(800, 600)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        # Main layout
+        # Main layout — bottom-anchored so bar + panels follow window resize.
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        # Spacer to push controls to bottom
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(8)
         layout.addStretch()
 
-        # Bottom control bar
+        t = self._theme
+
+        # Idle hint (shown before the bottom bar reveals itself)
+        self.hint_label = QLabel("Press Space or click the mic to talk")
+        self.hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.hint_label.setStyleSheet(f"color: {t.text_dim}; font-size: 13px;")
+        layout.addWidget(self.hint_label, alignment=Qt.AlignmentFlag.AlignBottom)
+
+        # ── Live panels (scrolling transcript, grows with the window) ──
+        layout.addWidget(self.panels, alignment=Qt.AlignmentFlag.AlignBottom)
+
+        # ── Bottom control bar ──
         self.bottom_bar = QFrame()
+        self.bottom_bar.setObjectName("bottomBar")
         self.bottom_bar.setFixedHeight(60)
-        self.bottom_bar.setStyleSheet("""
-            QFrame {
-                background: rgba(0, 0, 0, 180);
-                border-top: 1px solid rgba(0, 200, 255, 100);
-            }
-        """)
+        self.bottom_bar.setStyleSheet(t.bottom_bar_qss())
 
         bar_layout = QHBoxLayout(self.bottom_bar)
         bar_layout.setContentsMargins(15, 5, 15, 5)
+        bar_layout.setSpacing(8)
 
-        # Microphone button
-        self.mic_btn = QPushButton("🎤")
+        # Microphone button (toggle — :checked style shows the on state)
+        self.mic_btn = QPushButton()
         self.mic_btn.setFixedSize(40, 40)
+        self.mic_btn.setCheckable(True)
+        self._set_mic_icon()
         self.mic_btn.setToolTip("Toggle voice capture (Space)")
         self.mic_btn.setAccessibleName("Microphone")
-        self.mic_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(0, 200, 255, 80);
-                border: 2px solid rgba(0, 200, 255, 150);
-                border-radius: 20px;
-                color: white;
-                font-size: 18px;
-            }
-            QPushButton:hover {
-                background: rgba(0, 200, 255, 150);
-            }
-        """)
+        self.mic_btn.setStyleSheet(t.button_qss( kind="accent", size=40))
         self.mic_btn.clicked.connect(self._toggle_voice)
         bar_layout.addWidget(self.mic_btn, alignment=Qt.AlignmentFlag.AlignLeft)
 
         # STOP button — cut the current reply (playback + in-flight stream)
-        self.stop_btn = QPushButton("⛔")
+        self.stop_btn = QPushButton()
         self.stop_btn.setFixedSize(34, 34)
+        self.stop_btn.setIcon(svg_icon("stop", "#ffd0d0", 18))
         self.stop_btn.setToolTip("Stop Jarvis mid-reply")
-        self.stop_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(180, 40, 40, 70);
-                border: 2px solid rgba(255, 120, 120, 140);
-                border-radius: 17px;
-                color: white;
-                font-size: 15px;
-            }
-            QPushButton:hover {
-                background: rgba(220, 60, 60, 130);
-            }
-        """)
+        self.stop_btn.setAccessibleName("Stop")
+        self.stop_btn.setStyleSheet(t.button_qss( kind="danger", size=34))
         self.stop_btn.clicked.connect(self._on_stop_clicked)
         bar_layout.addWidget(self.stop_btn, alignment=Qt.AlignmentFlag.AlignLeft)
 
-        # Status label
+        # Status label + service pills
         self.status_label = QLabel("⏹ Standby")
-        self.status_label.setStyleSheet("color: rgba(0, 200, 255, 200); font-size: 14px;")
+        self.status_label.setStyleSheet(app_theme.status_qss(t, t.state_idle))
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         bar_layout.addWidget(self.status_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
+        self.status_pill = QLabel()
+        self.status_pill.setStyleSheet("font-size: 11px;")
+        self.status_pill.setToolTip("Service status: LLM / STT / TTS (last error on hover)")
+        bar_layout.addWidget(self.status_pill, alignment=Qt.AlignmentFlag.AlignRight)
+
         # Chat input
         self.chat_input = QLineEdit()
-        self.chat_input.setPlaceholderText("Type a message...")
+        self.chat_input.setPlaceholderText("Type a message…  (Space = talk)")
         self.chat_input.setAccessibleName("Chat input")
-        self.chat_input.setStyleSheet("""
-            QLineEdit {
-                background: rgba(0, 0, 0, 100);
-                border: 1px solid rgba(0, 200, 255, 80);
-                border-radius: 4px;
-                padding: 5px 10px;
-                color: white;
-                font-size: 14px;
-            }
-            QLineEdit:focus {
-                border-color: rgba(0, 200, 255, 150);
-            }
-        """)
+        self.chat_input.setStyleSheet(t.input_qss())
         self.chat_input.returnPressed.connect(self._on_send_clicked)
         bar_layout.addWidget(self.chat_input, alignment=Qt.AlignmentFlag.AlignRight, stretch=1)
 
         # Send button
-        self.send_btn = QPushButton("▶")
+        self.send_btn = QPushButton()
         self.send_btn.setFixedSize(40, 35)
+        self.send_btn.setIcon(svg_icon("send", "#e6f0fa", 18))
         self.send_btn.setToolTip("Send typed message")
         self.send_btn.setAccessibleName("Send")
-        self.send_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(0, 200, 255, 80);
-                border: 2px solid rgba(0, 200, 255, 150);
-                border-radius: 4px;
-                color: white;
-                font-size: 14px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background: rgba(0, 200, 255, 150);
-            }
-        """)
+        self.send_btn.setStyleSheet(t.button_qss( kind="accent", size=35))
         self.send_btn.clicked.connect(self._on_send_clicked)
         bar_layout.addWidget(self.send_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
         # Settings button
-        self.settings_btn = QPushButton("⚙")
+        self.settings_btn = QPushButton()
         self.settings_btn.setFixedSize(35, 35)
+        self.settings_btn.setIcon(svg_icon("settings", "#cccccc", 18))
         self.settings_btn.setToolTip("Settings")
         self.settings_btn.setAccessibleName("Settings")
-        self.settings_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(80, 80, 80, 60);
-                border: 1px solid rgba(150, 150, 150, 100);
-                border-radius: 18px;
-                color: #ccc;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background: rgba(120, 120, 120, 80);
-                border-color: rgba(200, 200, 200, 150);
-            }
-        """)
+        self.settings_btn.setStyleSheet(t.button_qss( kind="ghost", size=35))
         self.settings_btn.clicked.connect(self._open_settings)
         bar_layout.addWidget(self.settings_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
-        # Live panels (transcript / streaming reply / tool activity) —
-        # stacked above the bottom bar; hidden until a turn produces content.
-        self.panels.move(0, 504)  # 600 - 60 (bar) - 96 (panels)
-        layout.addWidget(self.panels, alignment=Qt.AlignmentFlag.AlignBottom)
-
         layout.addWidget(self.bottom_bar)
 
-        # Initially hide the bottom bar (shown after face recognition)
+        # Bottom bar stays hidden behind the face screen, but the hint
+        # keeps the app visibly alive if face recognition never lands.
         self.bottom_bar.hide()
+
+        # ── System tray: quit / hide / voice / profiles ──
+        self._make_tray()
+
+    def _fade_in(self, w):
+        """Opacity fade-in for child widgets (needs QGraphicsOpacityEffect —
+        windowOpacity only applies to top-level windows)."""
+        from PyQt6.QtWidgets import QGraphicsOpacityEffect
+
+        effect = QGraphicsOpacityEffect(w)
+        w.setGraphicsEffect(effect)
+        w.show()
+        anim = QPropertyAnimation(effect, b"opacity", self)
+        anim.setDuration(350)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.start()
+        self._fade_anims = getattr(self, "_fade_anims", [])
+        self._fade_anims.append(anim)
+
+    def _set_mic_icon(self):
+        t = self._theme
+        self.mic_btn.setIcon(svg_icon("mic" if not self._running else "stop", t.text, 20))
+
+    def _make_tray(self):
+        """System tray so the always-on-top HUD can be hidden/quit/triggered."""
+        t = self._theme
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            logger.info("No system tray on this platform — skipping")
+            return
+        self.tray = QSystemTrayIcon(svg_icon("power", t.accent, 22), self)
+        self.tray.setToolTip("Jarvis")
+        menu = QMenu()
+        act_show = QAction("Show / hide", menu)
+        act_show.triggered.connect(self._tray_toggle_visible)
+        act_voice = QAction("Start/stop listening (Space)", menu)
+        act_voice.triggered.connect(self._toggle_voice)
+        menu.addAction(act_show)
+        menu.addAction(act_voice)
+        self._tray_profile_menu = QMenu("Profile", menu)
+        self._tray_profile_menu.aboutToShow.connect(self._rebuild_tray_profiles)
+        menu.addMenu(self._tray_profile_menu)
+        menu.addSeparator()
+        act_quit = QAction("Quit", menu)
+        act_quit.triggered.connect(self._quit_app)
+        menu.addAction(act_quit)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self._tray_activated)
+        self.tray.show()
+
+    def _rebuild_tray_profiles(self):
+        m = self._tray_profile_menu
+        m.clear()
+        try:
+            names = self.agent.profiles.list_names()
+        except Exception:
+            names = []
+        active = getattr(self.agent, "_active_profile", None)
+        for n in names:
+            act = QAction(("● " if active and active.name == n else "    ") + n, m)
+            act.triggered.connect(lambda _=False, name=n: self.agent.switch_profile(name))
+            m.addAction(act)
+        if not names:
+            m.addAction(QAction("(no profiles)", m)).setEnabled(False)
+
+    def _tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self._tray_toggle_visible()
+
+    def _tray_toggle_visible(self):
+        if getattr(self, "tray", None) is None:
+            return  # no tray on this platform — hide-to-tray would be a dead end
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+    def _quit_app(self):
+        self._quitting = True
+        self.close()
+        QApplication.instance().quit()
+
+    def _apply_profile_accent(self, hue: int | None):
+        """Re-tint chrome accents to the active profile hue (None = default)."""
+        if hue is None:
+            self._theme = app_theme.DEFAULT
+        else:
+            acc, dim, line = app_theme.accent_for_hue(hue)
+            self._theme = app_theme.themed(app_theme.Theme(accent=acc, accent_dim=dim, accent_line=line))
+        t = self._theme
+        self.panels.set_theme(t)
+        self.bottom_bar.setStyleSheet(t.bottom_bar_qss())
+        self.mic_btn.setStyleSheet(t.button_qss( kind="accent", size=40))
+        self.send_btn.setStyleSheet(t.button_qss( kind="accent", size=35))
+        self.chat_input.setStyleSheet(t.input_qss())
+        self.settings_btn.setStyleSheet(t.button_qss( kind="ghost", size=35))
+
+    # ── Window dragging (frameless window support) ───────────────────
+
+    def resizeEvent(self, event):
+        """Keep the HUD canvas filling the window (it scales internally)."""
+        super().resizeEvent(event)
+        size = event.size()
+        for h in (self.hud_arc, self.hud_smoke, self.face_screen):
+            if h is not None:
+                h.resize(size)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_offset = event.globalPosition().toPoint() - self.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.MouseButton.LeftButton and hasattr(self, "_drag_offset"):
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_offset = None
+        super().mouseReleaseEvent(event)
+
+    def _update_status_pills(self):
+        """Persistent ● LLM ● STT ● TTS badges (C13)."""
+        a = self.agent
+        try:
+            llm = bool(a.llm_base_url)
+            stt = bool(getattr(a.stt, "_connected", False))
+            tts = bool(getattr(a.tts, "_connected", False))
+        except Exception:
+            llm = stt = tts = False
+        col = lambda ok: self._theme.ok if ok else self._theme.error
+        parts = [
+            f"<span style='color:{col(llm)}'>● LLM</span>",
+            f"<span style='color:{col(stt)}'>● STT</span>",
+            f"<span style='color:{col(tts)}'>● TTS</span>",
+        ]
+        last = getattr(self.agent.chat, "last_error", None) or ""
+        self.status_pill.setText("  ".join(parts))
+        self.status_pill.setToolTip(("Last LLM error: " + last) if last else "All connections nominal")
 
     # ── Live panel handlers (GUI thread) ─────────────────────────────
 
@@ -587,6 +699,7 @@ class JarvisApp(QWidget):
         else:
             self.status_label.setText("⚠ Partial connection")
             print("Warning: Some services not connected")
+        self._update_status_pills()
 
         # Start hands-free wake word listening (no-op if unavailable/disabled).
         # Runs in the background audio thread; only active while IDLE.
@@ -641,6 +754,8 @@ class JarvisApp(QWidget):
             if self.chat_input.text():
                 self.chat_input.clear()
                 return
+            self._tray_toggle_visible()
+            return
         if (
             event.key() == Qt.Key.Key_Space
             and not self.chat_input.hasFocus()
@@ -652,9 +767,10 @@ class JarvisApp(QWidget):
     def _on_state_change(self, state: JarvisState):
         """Update UI on state change."""
         self.hud.set_state(state)
-        # A new voice cycle begins — reset the live panels for the new turn.
+        # A new voice cycle begins — roll the transcript to a fresh turn
+        # (previous turns stay readable in the scroll history).
         if state == JarvisState.LISTENING:
-            self.panels.clear_turn()
+            self.panels.begin_turn()
         state_colors = {
             JarvisState.IDLE: ("⏹ Standby", "rgba(0, 200, 255, 200)"),
             JarvisState.LISTENING: ("🎙 Listening...", "rgba(0, 255, 100, 220)"),
@@ -664,6 +780,7 @@ class JarvisApp(QWidget):
         text, color = state_colors.get(state, ("?", "white"))
         self.status_label.setText(text)
         self.status_label.setStyleSheet(f"color: {color}; font-size: 14px;")
+        self._update_status_pills()
 
     def _on_face_detected(self, name: str, confidence: float):
         """Handle face detection — switch to that profile, update HUD."""
@@ -673,6 +790,7 @@ class JarvisApp(QWidget):
             if self.agent.switch_profile(profile.name):
                 # Update HUD with profile name + accent color
                 self.hud.set_profile(profile.name, profile.accent_hue)
+                self._apply_profile_accent(profile.accent_hue)
                 logger.info(f"Profile switched to: {profile.name}")
             else:
                 self.hud.set_face_detected(profile.name, confidence)
@@ -762,7 +880,8 @@ class JarvisApp(QWidget):
                 self._transition_timer = None
             self.face_thread.stop()  # Stop camera + sampling loop
             self.face_screen.hide()
-            self.bottom_bar.show()
+            self.hint_label.hide()
+            self._fade_in(self.bottom_bar)
             logger.info("Face recognition complete, showing HUD")
 
     # ── Face enrollment handlers ──────────────────────────────────────
@@ -901,12 +1020,14 @@ class JarvisApp(QWidget):
             if self._voice_task:
                 self._voice_task.cancel()
             self._voice_task = None
-            self.mic_btn.setText("🎤")
+            self.mic_btn.setChecked(False)
+            self._set_mic_icon()
             self.hud.set_state(JarvisState.IDLE)
         else:
             # Start voice mode
             self._running = True
-            self.mic_btn.setText("⏹")
+            self.mic_btn.setChecked(True)
+            self._set_mic_icon()
             self.hud.set_state(JarvisState.LISTENING)
             logger.info("Voice mode started — beginning listen loop")
             if self.event_loop_thread.loop:
@@ -969,6 +1090,16 @@ class JarvisApp(QWidget):
 
     def closeEvent(self, event):
         """Clean shutdown."""
+        # Tray-close = hide to tray unless Quit was used.
+        if not getattr(self, "_quitting", False) and getattr(self, "tray", None) is not None and self.tray.isVisible():
+            event.ignore()
+            self.hide()
+            self.tray.showMessage("Jarvis", "Running in the tray — Quit from the tray menu to exit.", QSystemTrayIcon.MessageIcon.Information, 3000)
+            return
+        try:
+            self._settings.setValue("geometry", self.saveGeometry())
+        except Exception:
+            pass
         self._running = False
         if self._voice_task:
             self._voice_task.cancel()

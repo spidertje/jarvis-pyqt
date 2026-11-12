@@ -97,7 +97,7 @@ class HUDOverlay(QWidget):
         # Timer: 60fps
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(1000 // 60)
+        self._timer.start(33)  # IDLE at launch; set_state() ramps to 60fps
 
     def _draw_assistant_name(self, p: QPainter):
         """Draw the assistant name in the top-left corner."""
@@ -138,6 +138,9 @@ class HUDOverlay(QWidget):
     def set_state(self, state: JarvisState):
         """Set the current HUD state. Triggers wave rings on SPEAKING."""
         self._state = state
+        # Idle runs at half rate (30fps) to cut background CPU/battery;
+        # active states keep the full 60fps animation.
+        self._timer.start(33 if state == JarvisState.IDLE else 1000 // 60)
         if state == JarvisState.SPEAKING:
             # Emit 3 concentric wave rings
             for i in range(3):
