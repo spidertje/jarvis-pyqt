@@ -725,7 +725,8 @@ class SmokeFaceHUD(QWidget):
         return 0.0
 
     def _next_blink(self):
-        return time.monotonic() - self._t0 + random.uniform(2.5, 7.0)
+        # blink rate -20% vs the web canvas (2.5-7.0s -> 3.1-8.75s)
+        return time.monotonic() - self._t0 + random.uniform(3.1, 8.75)
 
     def _draw_anatomy(self, pt: QPainter, e, my, t_now):
         hue = int(self.P["hue"]) % 360
