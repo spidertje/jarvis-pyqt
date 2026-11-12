@@ -29,13 +29,18 @@ def test_chrome_widgets_exist(app_window):
                  "chat_input", "panels", "hint_label"):
         assert hasattr(app_window, name), f"missing {name}"
 
-def test_tray_only_when_available(app_window):
-    from PyQt6.QtWidgets import QSystemTrayIcon
+def test_tray_skipped_offscreen(app_window):
+    """Offscreen QPA reports a tray but segfaults on show() — the app must
+    skip tray construction there (CI exit-139 guard)."""
+    import os
 
-    if QSystemTrayIcon.isSystemTrayAvailable():
-        assert getattr(app_window, "tray", None) is not None
-    else:
+    if os.environ.get("QT_QPA_PLATFORM", "").lower() == "offscreen":
         assert getattr(app_window, "tray", None) is None
+    else:  # pragma: no cover — real desktops
+        from PyQt6.QtWidgets import QSystemTrayIcon
+
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            assert getattr(app_window, "tray", None) is not None
 
 
 def test_icons_are_svg_not_emoji(app_window):

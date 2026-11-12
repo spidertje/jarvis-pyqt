@@ -552,30 +552,44 @@ class JarvisApp(QWidget):
         self.mic_btn.setIcon(svg_icon("mic" if not self._running else "stop", t.text, 20))
 
     def _make_tray(self):
-        """System tray so the always-on-top HUD can be hidden/quit/triggered."""
+        """System tray so the always-on-top HUD can be hidden/quit/triggered.
+
+        Defensive: some headless/offscreen platforms *report* a tray but
+        segfault on show() — treat any failure as "no tray" (CI crashed on
+        exactly this once, exit 139)."""
         t = self._theme
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-            logger.info("No system tray on this platform — skipping")
+        self.tray = None
+        # The offscreen QPA platform reports a tray but segfaults on show()
+        # (killed the CI run with exit 139) — never build one there.
+        if os.environ.get("QT_QPA_PLATFORM", "").lower() == "offscreen":
+            logger.info("Offscreen platform — tray disabled")
             return
-        self.tray = QSystemTrayIcon(svg_icon("power", t.accent, 22), self)
-        self.tray.setToolTip("Jarvis")
-        menu = QMenu()
-        act_show = QAction("Show / hide", menu)
-        act_show.triggered.connect(self._tray_toggle_visible)
-        act_voice = QAction("Start/stop listening (Space)", menu)
-        act_voice.triggered.connect(self._toggle_voice)
-        menu.addAction(act_show)
-        menu.addAction(act_voice)
-        self._tray_profile_menu = QMenu("Profile", menu)
-        self._tray_profile_menu.aboutToShow.connect(self._rebuild_tray_profiles)
-        menu.addMenu(self._tray_profile_menu)
-        menu.addSeparator()
-        act_quit = QAction("Quit", menu)
-        act_quit.triggered.connect(self._quit_app)
-        menu.addAction(act_quit)
-        self.tray.setContextMenu(menu)
-        self.tray.activated.connect(self._tray_activated)
-        self.tray.show()
+        try:
+            if not QSystemTrayIcon.isSystemTrayAvailable():
+                logger.info("No system tray on this platform — skipping")
+                return
+            self.tray = QSystemTrayIcon(svg_icon("power", t.accent, 22), self)
+            self.tray.setToolTip("Jarvis")
+            menu = QMenu()
+            act_show = QAction("Show / hide", menu)
+            act_show.triggered.connect(self._tray_toggle_visible)
+            act_voice = QAction("Start/stop listening (Space)", menu)
+            act_voice.triggered.connect(self._toggle_voice)
+            menu.addAction(act_show)
+            menu.addAction(act_voice)
+            self._tray_profile_menu = QMenu("Profile", menu)
+            self._tray_profile_menu.aboutToShow.connect(self._rebuild_tray_profiles)
+            menu.addMenu(self._tray_profile_menu)
+            menu.addSeparator()
+            act_quit = QAction("Quit", menu)
+            act_quit.triggered.connect(self._quit_app)
+            menu.addAction(act_quit)
+            self.tray.setContextMenu(menu)
+            self.tray.activated.connect(self._tray_activated)
+            self.tray.show()
+        except Exception as e:  # noqa: BLE001 — tray is best-effort
+            logger.warning(f"System tray unavailable: {e}")
+            self.tray = None
 
     def _rebuild_tray_profiles(self):
         m = self._tray_profile_menu
