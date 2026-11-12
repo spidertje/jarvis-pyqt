@@ -34,6 +34,9 @@ Two interchangeable faces, selectable live:
   - State machine mapping (auto mode): IDLE→calm, LISTENING→neutral,
     THINKING→surprised, SPEAKING→happy.
 
+Keyboard: **Space** = push-to-talk (when the chat box is not focused), **Esc** =
+clear chat input, **F2** = cycle HUD frontend.
+
 Switch via **Settings → Appearance → HUD Frontend**, press **F2** to cycle,
 or set `frontend` in config / `JARVIS_FRONTEND=smoke`.
 
