@@ -1,21 +1,13 @@
-"""Tests for the live HUD panels (transcript / reply / activity + approval card)."""
+"""Tests for the live HUD panels (transcript / reply / activity)."""
 
 import pytest
 
-from jarvis.hud_panels import ACTIVITY_LINES, ApprovalCard, HUDPanels, REPLY_VISIBLE_CHARS
+from jarvis.hud_panels import ACTIVITY_LINES, HUDPanels, REPLY_VISIBLE_CHARS
 
 
 @pytest.fixture
 def panels(qtbot):
     w = HUDPanels()
-    qtbot.addWidget(w)
-    yield w
-    w.deleteLater()
-
-
-@pytest.fixture
-def card(qtbot):
-    w = ApprovalCard()
     qtbot.addWidget(w)
     yield w
     w.deleteLater()
@@ -106,27 +98,3 @@ class TestActivityFeed:
         panels.set_activity("b", "▸ two()")
         panels.set_activity("c", "▸ three()")
         assert panels.activity_label.text() == "▸ two()\n▸ three()"
-
-
-class TestApprovalCard:
-    def test_starts_hidden(self, card):
-        assert not card.isVisible()
-
-    def test_show_action_populates_title(self, card):
-        card.show_action("send_email", "to: bob@example.com")
-        assert "send_email" in card.title_label.text()
-        assert card.detail_label.text() == "to: bob@example.com"
-        assert card.isVisible()
-
-    def test_allow_emits_true(self, card):
-        results = []
-        card.decided.connect(results.append)
-        card.allow_btn.clicked.emit()
-        assert results == [True]
-        assert not card.isVisible()
-
-    def test_deny_emits_false(self, card):
-        results = []
-        card.decided.connect(results.append)
-        card.deny_btn.clicked.emit()
-        assert results == [False]

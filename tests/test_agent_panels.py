@@ -1,11 +1,9 @@
-"""Tests for agent HUD-panel callbacks and the local approval gate.
+"""Tests for agent HUD-panel callbacks (user text / reply stream / tool activity).
 
 Drives JarvisAgent with mocked STT/chat/TTS/audio (same pattern as
 test_agent_streaming) and asserts:
 - the user utterance, each reply token, and in-band tool calls reach
-  registered callbacks;
-- request_approval blocks until resolve_approval, denies on timeout,
-  and rejects concurrent requests.
+  registered callbacks.
 """
 
 import asyncio
@@ -84,44 +82,3 @@ class TestPanelCallbacks:
         # No callbacks at all — the run must still complete cleanly.
         await agent._run_voice()
         assert agent.audio.play.call_args_list
-
-
-class TestApprovalGate:
-    @pytest.mark.asyncio
-    async def test_allow_resolves_pending_request(self):
-        agent = _make_agent()
-        fut = asyncio.create_task(agent.request_approval("send_email", timeout=5.0))
-        await asyncio.sleep(0.05)  # let it block
-        threading.Timer(0.05, lambda: agent.resolve_approval(True)).start()
-        result = await fut
-        assert result is True
-        assert agent._approval_evt is None  # gate released
-
-    @pytest.mark.asyncio
-    async def test_deny_resolves_pending_request(self):
-        agent = _make_agent()
-        fut = asyncio.create_task(agent.request_approval("send_email", timeout=5.0))
-        await asyncio.sleep(0.05)
-        agent.resolve_approval(False)
-        assert await fut is False
-
-    @pytest.mark.asyncio
-    async def test_timeout_defaults_to_deny(self):
-        agent = _make_agent()
-        result = await agent.request_approval("open_url", timeout=0.15)
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_concurrent_request_rejected(self):
-        agent = _make_agent()
-        fut = asyncio.create_task(agent.request_approval("first", timeout=5.0))
-        await asyncio.sleep(0.05)
-        # A second request while one is pending must not deadlock — it denies.
-        assert await agent.request_approval("second", timeout=0.1) is False
-        agent.resolve_approval(True)
-        assert await fut is True
-
-    def test_resolve_without_request_is_noop(self):
-        agent = _make_agent()
-        agent.resolve_approval(True)  # must not raise
-        assert agent._approval_evt is None

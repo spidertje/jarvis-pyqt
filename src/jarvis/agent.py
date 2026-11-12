@@ -200,10 +200,6 @@ class JarvisAgent:
         self._reply_text_callbacks: list[Callable[[str], None]] = []
         self._tool_call_callbacks: list[Callable[[str, str], None]] = []
 
-        # Approval gate (locally-executed actions).
-        self._approval_evt: threading.Event | None = None
-        self._approval_result: bool = False
-
         # Barge-in state
         self._barge_in: BargeInListener | None = None
         self._stop_evt = threading.Event()
@@ -318,37 +314,6 @@ class JarvisAgent:
                 cb(key, description)
             except Exception as e:  # noqa: BLE001
                 logger.error(f"Tool-call callback error: {e}")
-
-    # ── Approval gate (locally-executed actions) ─────────────────────
-
-    async def request_approval(self, action: str, detail: str = "", timeout: float = 60.0) -> bool:
-        """Ask the user to ALLOW/DENY a locally-executed action.
-
-        Blocks (without stalling the Qt event loop — the UI thread is a
-        separate thread) until :meth:`resolve_approval` is called or
-        ``timeout`` elapses. Deny (False) is the safe default on timeout.
-
-        Scope: gates *local* actions only. Tool calls executed
-        server-side are governed by the server's own approval settings.
-        """
-        if self._approval_evt is not None:
-            logger.warning("request_approval called while one is pending — denying new request")
-            return False
-        self._approval_evt = threading.Event()
-        self._approval_result = False
-        logger.info(f"Approval requested: {action}")
-        try:
-            await asyncio.to_thread(self._approval_evt.wait, timeout)
-            return self._approval_result
-        finally:
-            self._approval_evt = None
-
-    def resolve_approval(self, allowed: bool) -> None:
-        """Resolve a pending approval (safe to call from any thread, e.g. a UI button)."""
-        if self._approval_evt is None:
-            return
-        self._approval_result = allowed
-        self._approval_evt.set()
 
     def _set_state(self, new_state: JarvisState):
         """Set state and notify callbacks."""

@@ -41,7 +41,7 @@ from jarvis.face import FaceConfig
 from jarvis.face_screen import FaceRecScreen
 from jarvis.hud_overlay import HUDOverlay
 from jarvis.smoke_face import SmokeFaceHUD
-from jarvis.hud_panels import ApprovalCard, HUDPanels
+from jarvis.hud_panels import HUDPanels
 from jarvis.profile import PALETTE_HUES, Profile
 from jarvis.settings import SettingsDialog
 from jarvis.state import JarvisState
@@ -237,7 +237,6 @@ class JarvisApp(QWidget):
     _panel_user_text = pyqtSignal(str)
     _panel_reply_text = pyqtSignal(str)
     _panel_tool_call = pyqtSignal(str, str)
-    _approval_requested = pyqtSignal(str, str)
     # Agent state changes (payload: JarvisState) — loop thread → GUI thread.
     _state_changed = pyqtSignal(object)
     # Bridges agent HUD mutations from ANY thread (audio callbacks included)
@@ -260,9 +259,8 @@ class JarvisApp(QWidget):
         self.hud = None
         self._apply_frontend()
 
-        # Live panels: transcript / streaming reply / tool activity + approval card
+        # Live panels: transcript / streaming reply / tool activity
         self.panels = HUDPanels()
-        self.approval_card = ApprovalCard()
 
         # Face recognition screen (shown on startup, fades out when face is recognized)
         self.face_screen = FaceRecScreen()
@@ -386,11 +384,9 @@ class JarvisApp(QWidget):
         self._panel_user_text.connect(self._on_panel_user_text)
         self._panel_reply_text.connect(self._on_panel_reply_text)
         self._panel_tool_call.connect(self._on_panel_tool_call)
-        self._approval_requested.connect(self._on_approval_requested)
         self.agent.on_user_text(lambda t: self._panel_user_text.emit(t))
         self.agent.on_reply_text(lambda c: self._panel_reply_text.emit(c))
         self.agent.on_tool_call(lambda k, d: self._panel_tool_call.emit(k, d))
-        self.approval_card.decided.connect(self._on_approval_decided)
 
         # Wake word (hands-free) — register the fire handler, start it once the
         # event loop is up (see _init_services). Fires → run one voice cycle.
@@ -549,10 +545,6 @@ class JarvisApp(QWidget):
         self.panels.move(0, 504)  # 600 - 60 (bar) - 96 (panels)
         layout.addWidget(self.panels, alignment=Qt.AlignmentFlag.AlignBottom)
 
-        # Approval card — centered overlay, shown on demand
-        self.approval_card.move((800 - 420) // 2, 190)
-        self.approval_card.raise_()
-
         layout.addWidget(self.bottom_bar)
 
         # Initially hide the bottom bar (shown after face recognition)
@@ -579,17 +571,6 @@ class JarvisApp(QWidget):
         """
         logger.info("STOP pressed — interrupting current reply")
         self.agent.interrupt()
-
-    # ── Approval card ────────────────────────────────────────────────
-
-    def _on_approval_requested(self, action: str, detail: str):
-        """Agent requested approval for a local action — show the card."""
-        self.approval_card.show_action(action, detail)
-
-    def _on_approval_decided(self, allowed: bool):
-        """User clicked ALLOW/DENY — unblock the agent's pending request."""
-        logger.info(f"Approval {'granted' if allowed else 'denied'}")
-        self.agent.resolve_approval(allowed)
 
     async def _init_services(self):
         """Initialize all services on startup."""

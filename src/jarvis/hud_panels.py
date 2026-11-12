@@ -1,6 +1,6 @@
 """
 Jarvis HUD Panels — live transcript, streaming reply, tool-activity feed,
-and the approval card.
+
 
 These widgets make the HUD *informational*: instead of only showing a state
 word, you see what you said, what Jarvis is saying (as it streams in), and
@@ -146,91 +146,3 @@ class HUDPanels(QWidget):
     @property
     def activity_lines(self) -> list[str]:
         return list(self._activity.values())
-
-
-class ApprovalCard(QFrame):
-    """ALLOW / DENY card for locally-executed actions.
-
-    Shown when the agent calls :meth:`JarvisAgent.request_approval`. The
-    user's decision is emitted via :attr:`decided` (True = allow,
-    False = deny). Until the user decides, the agent's await blocks.
-
-    Scope note: this gates *local* actions only. Tool calls executed
-    server-side (inside Hermes) are gated by Hermes' own approval
-    settings, not this widget.
-    """
-
-    decided = pyqtSignal(bool)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("ApprovalCard")
-        self.setStyleSheet(
-            """
-            #ApprovalCard {
-                background: rgba(5, 10, 15, 235);
-                border: 1px solid rgba(0, 200, 255, 160);
-                border-radius: 10px;
-            }
-            QLabel {
-                color: white;
-                background: transparent;
-            }
-            QPushButton {
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 13px;
-                padding: 6px 18px;
-            }
-            """
-        )
-        self.setFixedWidth(420)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 14, 18, 14)
-        layout.setSpacing(10)
-
-        self.title_label = QLabel("Approval required")
-        self.title_label.setStyleSheet("font-size: 14px; font-weight: bold;")
-
-        self.detail_label = QLabel("")
-        self.detail_label.setWordWrap(True)
-        self.detail_label.setStyleSheet("color: rgba(200, 220, 230, 220); font-size: 12px;")
-
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        self.allow_btn = QPushButton("ALLOW")
-        self.allow_btn.setStyleSheet(
-            "QPushButton { background: rgba(0, 180, 90, 120); border: 1px solid rgba(0, 255, 140, 180); color: white; }"
-            "QPushButton:hover { background: rgba(0, 220, 110, 170); }"
-        )
-        self.deny_btn = QPushButton("DENY")
-        self.deny_btn.setStyleSheet(
-            "QPushButton { background: rgba(180, 40, 40, 120); border: 1px solid rgba(255, 120, 120, 180); color: white; }"
-            "QPushButton:hover { background: rgba(220, 60, 60, 170); }"
-        )
-        buttons.addWidget(self.allow_btn)
-        buttons.addWidget(self.deny_btn)
-
-        layout.addWidget(self.title_label)
-        layout.addWidget(self.detail_label)
-        layout.addLayout(buttons)
-
-        self.allow_btn.clicked.connect(lambda: self._decide(True))
-        self.deny_btn.clicked.connect(lambda: self._decide(False))
-
-        self.hide()
-
-    def show_action(self, action: str, detail: str = "") -> None:
-        """Populate the card for ``action`` and show it."""
-        self.title_label.setText(f"⚠ Approve: {action}")
-        self.detail_label.setText(detail)
-        self.show()
-        self.raise_()
-
-    def close_card(self) -> None:
-        self.hide()
-
-    def _decide(self, allowed: bool) -> None:
-        self.decided.emit(allowed)
-        self.hide()
