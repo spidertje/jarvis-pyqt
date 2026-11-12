@@ -19,7 +19,7 @@ and animation speed.
 import math
 import random
 
-from PyQt6.QtCore import QPointF, Qt, QTimer
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -253,7 +253,17 @@ class HUDOverlay(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        cx, cy = self._cx, self._cy
+        cx, cy = self.width() / 2.0, self.height() / 2.0
+        # Uniform scale from the 800x600 reference design so the reactor,
+        # rings and bars stay proportional in resized or HiDPI windows
+        # instead of clipping or drifting off-center.
+        s = min(self.width() / 800.0, self.height() / 600.0)
+        p.save()
+        p.translate(cx, cy)
+        p.scale(s, s)
+        p.translate(-400.0, -300.0)
+        # Sub-draw helpers work in reference (800x600) space.
+        cx, cy = 400.0, 300.0
         act = self._activity
 
         # Color: profile hue overrides default cyan when active
@@ -308,6 +318,7 @@ class HUDOverlay(QWidget):
         # 11. State label
         self._draw_state_label(p, cx, cy, act, hue, sat)
 
+        p.restore()
         p.end()
 
     def _draw_vignette(self, p, cx, cy, act, hue, sat):
@@ -316,7 +327,8 @@ class HUDOverlay(QWidget):
         vg.setColorAt(0, self._color(0, 0, 0, int(60 + act * 80)))
         vg.setColorAt(0.6, self._color(0, 0, 0, int(30 + act * 50)))
         vg.setColorAt(1, QColor(0, 0, 0, 0))
-        p.fillRect(self.rect(), vg)
+        # Fill well past the reference box so letterboxed edges match.
+        p.fillRect(QRectF(cx - 1000, cy - 1000, 2400, 2400), vg)
 
     def _draw_glow_rings(self, p, cx, cy, act, hue, sat):
         """Three concentric glow rings with subtle pulse."""

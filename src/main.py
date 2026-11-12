@@ -443,6 +443,8 @@ class JarvisApp(QWidget):
         # Microphone button
         self.mic_btn = QPushButton("🎤")
         self.mic_btn.setFixedSize(40, 40)
+        self.mic_btn.setToolTip("Toggle voice capture (Space)")
+        self.mic_btn.setAccessibleName("Microphone")
         self.mic_btn.setStyleSheet("""
             QPushButton {
                 background: rgba(0, 200, 255, 80);
@@ -486,6 +488,7 @@ class JarvisApp(QWidget):
         # Chat input
         self.chat_input = QLineEdit()
         self.chat_input.setPlaceholderText("Type a message...")
+        self.chat_input.setAccessibleName("Chat input")
         self.chat_input.setStyleSheet("""
             QLineEdit {
                 background: rgba(0, 0, 0, 100);
@@ -505,6 +508,8 @@ class JarvisApp(QWidget):
         # Send button
         self.send_btn = QPushButton("▶")
         self.send_btn.setFixedSize(40, 35)
+        self.send_btn.setToolTip("Send typed message")
+        self.send_btn.setAccessibleName("Send")
         self.send_btn.setStyleSheet("""
             QPushButton {
                 background: rgba(0, 200, 255, 80);
@@ -524,6 +529,8 @@ class JarvisApp(QWidget):
         # Settings button
         self.settings_btn = QPushButton("⚙")
         self.settings_btn.setFixedSize(35, 35)
+        self.settings_btn.setToolTip("Settings")
+        self.settings_btn.setAccessibleName("Settings")
         self.settings_btn.setStyleSheet("""
             QPushButton {
                 background: rgba(80, 80, 80, 60);
@@ -625,9 +632,20 @@ class JarvisApp(QWidget):
         logger.info(f"Frontend switched to: {self._frontend}")
 
     def keyPressEvent(self, event):
-        """F2 cycles the HUD frontend (arc reactor / smoke face)."""
+        """Global shortcuts: F2 cycles HUD frontend, Esc clears chat input,
+        Space pushes-to-talk when not typing."""
         if event.key() == Qt.Key.Key_F2:
             self._cycle_frontend()
+            return
+        if event.key() == Qt.Key.Key_Escape:
+            if self.chat_input.text():
+                self.chat_input.clear()
+                return
+        if (
+            event.key() == Qt.Key.Key_Space
+            and not self.chat_input.hasFocus()
+        ):
+            self._toggle_voice()
             return
         super().keyPressEvent(event)
 
