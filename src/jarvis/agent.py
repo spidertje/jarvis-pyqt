@@ -73,6 +73,10 @@ class AgentConfig:
     # hangs for this long (network hang, service wedged), the cycle is cancelled
     # and an error is surfaced. 0 disables.
     voice_cycle_timeout: float = 90.0
+    # Conversation history cap (messages, user+assistant counted together).
+    # Oldest turns are dropped so the context can never grow past the model's
+    # limit and the persisted JSON column stays bounded. 0 disables trimming.
+    max_history_messages: int = 40
     palette_index: int | None = None  # index into appearance palette list
     # Default system prompt (used when no profile is active)
     # Loaded from SOUL.md if present, otherwise fallback
@@ -212,6 +216,30 @@ class JarvisAgent:
         # Service-failure reporting: callbacks receive a human-readable string
         # ("LLM endpoint unreachable: http://…") — the UI shows it verbatim.
         self._error_callbacks: list[Callable[[str], None]] = []
+
+    def _trim_history(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
+        """Drop oldest turns beyond ``config.max_history_messages``.
+
+        Keeps whole user→assistant pairs at the boundary where possible (never
+        starts the window with an orphaned assistant reply). 0 = no cap.
+        """
+        cap = int(getattr(self.config, "max_history_messages", 0) or 0)
+        if cap <= 0 or len(messages) <= cap:
+            return list(messages)
+        trimmed = list(messages[-cap:])
+        while trimmed and trimmed[0].get("role") == "assistant":
+            trimmed.pop(0)
+        return trimmed
+
+    def _append_message(self, role: str, content: str) -> None:
+        """Append to history and keep it within the cap in-place."""
+        self._messages.append({"role": role, "content": content})
+        cap = int(getattr(self.config, "max_history_messages", 0) or 0)
+        if cap > 0 and len(self._messages) > cap:
+            excess = len(self._messages) - cap
+            del self._messages[:excess]
+            while self._messages and self._messages[0].get("role") == "assistant":
+                self._messages.pop(0)
 
     # ── Error reporting ──────────────────────────────────────────────
 
@@ -377,7 +405,7 @@ class JarvisAgent:
             if self.hud:
                 self.hud.set_assistant_name(self.config.assistant_name)
                 self.hud.set_profile(name, self._active_profile.accent_hue)
-            self._messages = list(self._active_profile.chat_history)
+            self._messages = self._trim_history(self._active_profile.chat_history)
             logger.info(
                 f"Profile switched to: {name} "
                 f"(assistant: {self.config.assistant_name}, "
@@ -587,7 +615,7 @@ class JarvisAgent:
 
         # Think — stream tokens, speak each complete sentence as it arrives.
         self._set_state(JarvisState.THINKING)
-        self._messages.append({"role": "user", "content": text})
+        self._append_message("user", text)
         self._stop_evt.clear()
         self._emit_user_text(text)
 
@@ -694,7 +722,7 @@ class JarvisAgent:
         # Persist conversation (spoken portion if interrupted).
         reply = " ".join(spoken).strip()
         if not interrupted and reply:
-            self._messages.append({"role": "assistant", "content": reply})
+            self._append_message("assistant", reply)
         if self._active_profile and (reply or not interrupted):
             self._active_profile.chat_history = list(self._messages)
             if reply:
@@ -710,10 +738,10 @@ class JarvisAgent:
         """
         self._set_state(JarvisState.THINKING)
         prompt = system_prompt or self._system_prompt
-        self._messages.append({"role": "user", "content": user_text})
+        self._append_message("user", user_text)
         reply = await self.chat.chat(self._messages, system_prompt=prompt)
         if reply:
-            self._messages.append({"role": "assistant", "content": reply})
+            self._append_message("assistant", reply)
         self._set_state(JarvisState.IDLE)
         return reply or ""
 
