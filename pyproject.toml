@@ -20,6 +20,12 @@ wakeword = [
     "openwakeword>=0.6.0",
     "onnxruntime>=1.17.0",
 ]
+# Test/dev toolchain (the suite needs an async plugin: asyncio_mode=auto).
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "pytest-qt>=4.2",
+]
 
 [project.scripts]
 jarvis = "main:main"
