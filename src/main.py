@@ -308,6 +308,9 @@ class JarvisApp(QWidget):
         agent_config.frontend = self.app_config.frontend
         # Assistant name
         agent_config.assistant_name = self.app_config.assistant_name
+        # Greeting on face recognition (JARVIS_GREETING=0 disables)
+        agent_config.greeting_enabled = os.environ.get(
+            "JARVIS_GREETING", "1").strip().lower() not in ("0", "false", "off", "no")
         # STT
         agent_config.silence_timeout = self.app_config.silence_timeout
         agent_config.silence_threshold = self.app_config.stt_sensitivity
@@ -905,6 +908,26 @@ class JarvisApp(QWidget):
         self.status_label.setStyleSheet(f"color: {color}; font-size: 14px;")
         self._update_status_pills()
 
+    def _greeting_for_user(self, name: str) -> None:
+        """Speak 'Hello <name>!' after face-recognition picks a profile.
+
+        Cooldown per user (JARVIS_GREETING_COOLDOWN, default 120s): the
+        face loop re-detects continuously, so without it Jarvis would
+        greet every second while you sit in front of the camera.
+        """
+        import os as _os
+        import time as _time
+        cooldown = float(_os.environ.get("JARVIS_GREETING_COOLDOWN", "120"))
+        now = _time.monotonic()
+        last = getattr(self, "_greeting_times", {}).get(name.lower(), -1e9)
+        if now - last < cooldown:
+            return
+        self._greeting_times = getattr(self, "_greeting_times", {})
+        self._greeting_times[name.lower()] = now
+        loop = getattr(self.event_loop_thread, "loop", None)
+        if loop and not loop.is_closed():
+            asyncio.run_coroutine_threadsafe(self.agent.greet(name), loop)
+
     def _on_face_detected(self, name: str, confidence: float):
         """Handle face detection — switch to that profile, update HUD."""
         # Look up profile by face_name first (explicit link), then by profile name.
@@ -915,6 +938,7 @@ class JarvisApp(QWidget):
                 self.hud.set_profile(profile.name, profile.accent_hue)
                 self._apply_profile_accent(profile.accent_hue)
                 logger.info(f"Profile switched to: {profile.name}")
+                self._greeting_for_user(profile.name)
             else:
                 self.hud.set_face_detected(profile.name, confidence)
                 logger.warning(f"Could not switch to profile: {profile.name}")
@@ -929,6 +953,7 @@ class JarvisApp(QWidget):
                     logger.info(
                         f"Auto-created + switched to profile for face: {name}"
                     )
+                    self._greeting_for_user(profile.name)
                     if self.hud:
                         self.hud.set_face_detected(name, confidence)
                 else:

@@ -77,6 +77,8 @@ class AgentConfig:
     # Oldest turns are dropped so the context can never grow past the model's
     # limit and the persisted JSON column stays bounded. 0 disables trimming.
     max_history_messages: int = 40
+    # Speak "Hello <name>!" when face recognition switches to a profile.
+    greeting_enabled: bool = True
     palette_index: int | None = None  # index into appearance palette list
     # Default system prompt (used when no profile is active)
     # Loaded from SOUL.md if present, otherwise fallback
@@ -392,6 +394,36 @@ class JarvisAgent:
         the profile is cleared (back to defaults).
         """
         self._profile_callbacks.append(callback)
+
+    async def greet(self, name: str) -> bool:
+        """Speak a greeting for a recognized user: 'Hello <name>!'
+
+        Runs on the event-loop thread (dispatch there from the GUI). TTS +
+        playback only; deliberately skips the LLM (a greeting must not
+        touch the profile's conversation history). Silently no-ops when
+        disabled, when a voice cycle is already running, or when the mic
+        is capturing (don't talk over the user).
+        """
+        if not getattr(self.config, "greeting_enabled", True) or not name:
+            return False
+        if self.state != JarvisState.IDLE:
+            logger.info(f"Greeting for {name!r} skipped — state={self.state.label}")
+            return False
+        greeting = f"Hello {name}!"
+        logger.info(f"Greeting: {greeting!r}")
+        # Mirror into the transcript/chat-log like a real turn would.
+        self._emit_reply_text(greeting)
+        self._set_state(JarvisState.SPEAKING)
+        try:
+            audio = await self.tts.speak(greeting)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Greeting TTS failed: {e}")
+            self._set_state(JarvisState.IDLE)
+            return False
+        if audio and not self._stop_evt.is_set():
+            await asyncio.to_thread(self.audio.play, audio)
+        self._set_state(JarvisState.IDLE)
+        return True
 
     def clear_profile(self):
         """Clear active profile (return to defaults)."""
