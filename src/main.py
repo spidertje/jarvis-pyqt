@@ -372,8 +372,9 @@ class JarvisApp(QWidget):
         # UI controls (foreground layer)
         self._setup_ui()
 
-        # Signal: async status updates → status label
-        self._status_updated.connect(self.status_label.setText)
+        # Signal: async status updates → status label (routed so control
+        # messages like the services-ready marker never render as text).
+        self._status_updated.connect(self._route_status)
         # Signal: user entered a name on the face screen
         self.face_screen.name_submitted.connect(self._on_name_submitted)
         # Signal: user skipped face enrollment
@@ -688,15 +689,38 @@ class JarvisApp(QWidget):
         logger.info("STOP pressed — interrupting current reply")
         self.agent.interrupt()
 
-    async def _init_services(self):
-        """Initialize all services on startup."""
-        ok = await self.agent.connect_all()
+    def _route_status(self, msg: str) -> None:
+        """GUI-thread handler for _status_updated. Control messages (emitted
+        from the event-loop thread) are dispatched, never rendered raw."""
+        if msg == "__connected__":
+            self._on_services_ready(True)
+        elif msg == "__partial__":
+            self._on_services_ready(False)
+        else:
+            self.status_label.setText(msg)
+
+    def _on_services_ready(self, ok: bool) -> None:
+        """Runs on the GUI thread (queued via _status_updated's signal)."""
         if ok:
             self.status_label.setText("✓ Connected")
         else:
             self.status_label.setText("⚠ Partial connection")
             print("Warning: Some services not connected")
         self._update_status_pills()
+
+    async def _init_services(self):
+        """Initialize all services on startup.
+
+        IMPORTANT: this coroutine runs on the EventLoopThread. Never touch Qt
+        widgets here — emit _status_updated (a queued signal) so the actual
+        widget updates land on the GUI thread. Direct setText from this
+        thread made QLabel create its QTextDocument on the wrong thread,
+        which segfaulted moments later when the GUI thread re-laid it out.
+        """
+        ok = await self.agent.connect_all()
+        self._status_updated.emit(
+            "__connected__" if ok else "__partial__"
+        )
 
         # Start hands-free wake word listening (no-op if unavailable/disabled).
         # Runs in the background audio thread; only active while IDLE.
