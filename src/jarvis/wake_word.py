@@ -17,6 +17,7 @@ within the ~12 ms real-time budget for 80 ms frames.
 """
 
 import logging
+import os
 import time
 
 logger = logging.getLogger(__name__)
@@ -58,15 +59,49 @@ class WakeWordDetector:
 
     @staticmethod
     def _load_model():
-        """Load the openWakeWord model (all pretrained words, clean keys)."""
+        """Load the openWakeWord model (all pretrained words, clean keys).
+
+        Prefer ONNX explicitly: openwakeword's Model() defaults to the
+        bundled .tflite files, which hard-fail without tflite-runtime
+        (not shipped for Intel macOS wheels) even though onnxruntime and
+        the .onnx models are installed.
+        """
         try:
             from openwakeword.model import Model
-
-            m = Model()
-            return m
         except Exception as e:  # noqa: BLE001 - any ML-stack failure
             logger.warning(f"openWakeWord unavailable — wake word disabled: {e}")
             return None
+        try:
+            import openwakeword
+            from openwakeword.utils import download_models
+
+            res = os.path.join(
+                os.path.dirname(openwakeword.__file__), "resources", "models")
+            onnx_paths = [
+                os.path.join(res, f)
+                for f in sorted(os.listdir(res))
+                if f.endswith(".onnx")
+                and not f.startswith(("melspectrogram", "embedding", "silero"))
+            ] if os.path.isdir(res) else []
+            if not onnx_paths:
+                # Nothing preloaded — pull the pretrained set (writes onnx
+                # + tflite into resources/models) and retry discovery.
+                download_models(resource_paths=res)
+                onnx_paths = [
+                    os.path.join(res, f)
+                    for f in sorted(os.listdir(res))
+                    if f.endswith(".onnx")
+                    and not f.startswith(("melspectrogram", "embedding", "silero"))
+                ]
+            return Model(wakeword_models=onnx_paths, inference_framework="onnx")
+        except Exception as e:  # noqa: BLE001 - fall back to default loader
+            logger.warning(
+                f"ONNX wake-word load failed ({e}); trying default loader")
+            try:
+                return Model()
+            except Exception as e2:  # noqa: BLE001
+                logger.warning(f"openWakeWord unavailable — wake word disabled: {e2}")
+                return None
 
     @property
     def available(self) -> bool:
