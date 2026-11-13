@@ -41,6 +41,7 @@ from jarvis import theme as app_theme
 from jarvis.icons import icon as svg_icon, svg as svg_markup
 
 from jarvis.agent import AgentConfig, JarvisAgent
+from jarvis.chat_log import ChatLogWindow
 from jarvis.config import AppConfig
 from jarvis.face import FaceConfig
 from jarvis.face_screen import FaceRecScreen
@@ -247,6 +248,8 @@ class JarvisApp(QWidget):
     # Bridges agent HUD mutations from ANY thread (audio callbacks included)
     # → executed on the GUI thread. Payload is a zero-arg callable.
     _hud_call = pyqtSignal(object)
+    # Profile changed (payload: Profile | None) — any thread → GUI thread.
+    _profile_changed = pyqtSignal(object)
 
     def _run_hud_call(self, fn) -> None:
         try:
@@ -401,6 +404,11 @@ class JarvisApp(QWidget):
         self.agent.on_reply_text(lambda c: self._panel_reply_text.emit(c))
         self.agent.on_tool_call(lambda k, d: self._panel_tool_call.emit(k, d))
 
+        # Profile switches (face recognition / tray) replace agent history —
+        # bridge to the GUI thread before touching the chat log window.
+        self._profile_changed.connect(lambda _p: self._resync_chat_log_profile())
+        self.agent.on_profile_changed(lambda p: self._profile_changed.emit(p))
+
         # Wake word (hands-free) — register the fire handler, start it once the
         # event loop is up (see _init_services). Fires → run one voice cycle.
         self.agent.on_wake_word(self._on_wake_word_fired)
@@ -512,6 +520,17 @@ class JarvisApp(QWidget):
         self.send_btn.clicked.connect(self._on_send_clicked)
         bar_layout.addWidget(self.send_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
+        # Chat log window button (toggles the full two-sided conversation view)
+        self.chat_log_btn = QPushButton()
+        self.chat_log_btn.setFixedSize(35, 35)
+        self.chat_log_btn.setCheckable(True)
+        self.chat_log_btn.setIcon(svg_icon("chat", "#cccccc", 18))
+        self.chat_log_btn.setToolTip("Chat history (Ctrl+H)")
+        self.chat_log_btn.setAccessibleName("Chat log")
+        self.chat_log_btn.setStyleSheet(t.button_qss( kind="ghost", size=35))
+        self.chat_log_btn.clicked.connect(self._toggle_chat_log)
+        bar_layout.addWidget(self.chat_log_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
         # Settings button
         self.settings_btn = QPushButton()
         self.settings_btn.setFixedSize(35, 35)
@@ -559,8 +578,11 @@ class JarvisApp(QWidget):
             act_show.triggered.connect(self._tray_toggle_visible)
             act_voice = QAction("Start/stop listening (Space)", menu)
             act_voice.triggered.connect(self._toggle_voice)
+            act_chat = QAction("Show chat (Ctrl+H)", menu)
+            act_chat.triggered.connect(self._toggle_chat_log)
             menu.addAction(act_show)
             menu.addAction(act_voice)
+            menu.addAction(act_chat)
             self._tray_profile_menu = QMenu("Profile", menu)
             self._tray_profile_menu.aboutToShow.connect(self._rebuild_tray_profiles)
             menu.addMenu(self._tray_profile_menu)
@@ -618,6 +640,9 @@ class JarvisApp(QWidget):
             self._theme = app_theme.themed(app_theme.Theme(accent=acc, accent_dim=dim, accent_line=line))
         t = self._theme
         self.panels.set_theme(t)
+        chat_log = getattr(self, "chat_log", None)
+        if chat_log is not None:
+            chat_log.set_theme(t)
         self.bottom_bar.setStyleSheet(t.bottom_bar_qss())
         self.mic_btn.setStyleSheet(t.button_qss( kind="accent", size=40))
         self.send_btn.setStyleSheet(t.button_qss( kind="accent", size=35))
@@ -669,11 +694,73 @@ class JarvisApp(QWidget):
 
     # ── Live panel handlers (GUI thread) ─────────────────────────────
 
+    def _ensure_chat_log(self) -> ChatLogWindow:
+        """Create the chat log window on first use; seed from history."""
+        if getattr(self, "chat_log", None) is None:
+            self.chat_log = ChatLogWindow(theme=self._theme)
+            self.chat_log.set_assistant_name(
+                getattr(self.agent.config, "assistant_name", "Jarvis"))
+            self.chat_log.send_requested.connect(self._send_from_chat_log)
+            self.chat_log.closed.connect(lambda: self.chat_log_btn.setChecked(False))
+            self.chat_log.set_history(list(self.agent._messages))
+        return self.chat_log
+
+    def _toggle_chat_log(self) -> None:
+        win = self._ensure_chat_log()
+        if win.isVisible():
+            win.hide()
+            self.chat_log_btn.setChecked(False)
+        else:
+            # Re-sync committed history each time the window opens.
+            win.set_history(list(self.agent._messages))
+            win.show()
+            win.raise_()
+            win.activateWindow()
+            self.chat_log_btn.setChecked(True)
+
+    def _send_from_chat_log(self, text: str) -> None:
+        """Send box in the chat log → same dispatch as the toolbar input."""
+        self._status_updated.emit("Thinking...")
+        if self.event_loop_thread and self.event_loop_thread.loop:
+            asyncio.run_coroutine_threadsafe(
+                self._send_chat(text), self.event_loop_thread.loop)
+
+    def _sync_chat_log_state(self, state: JarvisState) -> None:
+        """Keep the log window's live turn in sync with agent state."""
+        win = getattr(self, "chat_log", None)
+        if win is None or not win.isVisible():
+            return
+        if state == JarvisState.LISTENING:
+            win.clear_live()
+            win.set_history(list(self.agent._messages))
+        elif state == JarvisState.IDLE:
+            # Turn finished — fold it into committed history.
+            win.clear_live()
+            win.set_history(list(self.agent._messages))
+
+    def _resync_chat_log_profile(self) -> None:
+        """Profile switch replaced agent._messages — reload the log window."""
+        win = getattr(self, "chat_log", None)
+        if win is None:
+            return
+        win.clear_live()
+        win.set_history(list(self.agent._messages))
+        win.set_assistant_name(getattr(self.agent.config, "assistant_name", "Jarvis"))
+
     def _on_panel_user_text(self, text: str):
         self.panels.set_user_text(text)
+        win = getattr(self, "chat_log", None)
+        if win is not None and win.isVisible():
+            win.set_live(user_text=text)
 
     def _on_panel_reply_text(self, chunk: str):
         self.panels.append_reply(chunk)
+        # The HUD transcript tail-caps at 800 chars; the chat log shows the
+        # whole reply, so accumulate the full stream separately.
+        self._live_reply_full = getattr(self, "_live_reply_full", "") + chunk
+        win = getattr(self, "chat_log", None)
+        if win is not None and win.isVisible():
+            win.set_live(reply_text=self._live_reply_full)
 
     def _on_panel_tool_call(self, key: str, description: str):
         self.panels.set_activity(key, description)
@@ -766,10 +853,13 @@ class JarvisApp(QWidget):
         logger.info(f"Frontend switched to: {self._frontend}")
 
     def keyPressEvent(self, event):
-        """Global shortcuts: F2 cycles HUD frontend, Esc clears chat input,
-        Space pushes-to-talk when not typing."""
+        """Global shortcuts: F2 cycles HUD frontend, Ctrl+H toggles the chat
+        log window, Esc clears chat input, Space pushes-to-talk."""
         if event.key() == Qt.Key.Key_F2:
             self._cycle_frontend()
+            return
+        if event.modifiers() == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_H:
+            self._toggle_chat_log()
             return
         if event.key() == Qt.Key.Key_Escape:
             if self.chat_input.text():
@@ -792,6 +882,8 @@ class JarvisApp(QWidget):
         # (previous turns stay readable in the scroll history).
         if state == JarvisState.LISTENING:
             self.panels.begin_turn()
+            self._live_reply_full = ""
+        self._sync_chat_log_state(state)
         state_colors = {
             JarvisState.IDLE: ("⏹ Standby", "rgba(0, 200, 255, 200)"),
             JarvisState.LISTENING: ("🎙 Listening...", "rgba(0, 255, 100, 220)"),
@@ -1155,6 +1247,11 @@ class JarvisApp(QWidget):
         # Stop transition timer
         if self._transition_timer is not None:
             self._transition_timer.stop()
+
+        # Close the chat log window with the app (it's a separate top-level).
+        chat_log = getattr(self, "chat_log", None)
+        if chat_log is not None:
+            chat_log.close()
 
         # Reset enrollment state
         self._enrollment_prompted = False

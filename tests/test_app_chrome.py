@@ -35,8 +35,36 @@ def app_window(qtbot):
 def test_chrome_widgets_exist(app_window):
     for name in ("bottom_bar", "mic_btn", "stop_btn", "send_btn",
                  "settings_btn", "status_label", "status_pill",
-                 "chat_input", "panels", "hint_label"):
+                 "chat_input", "panels", "hint_label", "chat_log_btn"):
         assert hasattr(app_window, name), f"missing {name}"
+
+
+def test_chat_log_toggle(app_window):
+    """Toolbar button creates the window, seeds history, toggles cleanly."""
+    app_window._toggle_chat_log()
+    assert app_window.chat_log.isVisible()
+    assert app_window.chat_log_btn.isChecked()
+    # live mirror flows into the chat log
+    app_window._on_panel_user_text("ping")
+    app_window._on_panel_reply_text("pong **live**")
+    html = app_window.chat_log.view.toHtml()
+    assert "ping" in html and "pong" in html
+    # second click hides it
+    app_window._toggle_chat_log()
+    assert not app_window.chat_log.isVisible()
+    assert not app_window.chat_log_btn.isChecked()
+
+
+def test_chat_log_resync_on_state(app_window):
+    app_window._toggle_chat_log()
+    app_window.agent._messages.append({"role": "user", "content": "committed turn"})
+    app_window._on_panel_user_text("live turn")
+    from jarvis.state import JarvisState
+    app_window._on_state_change(JarvisState.IDLE)
+    html = app_window.chat_log.view.toHtml()
+    assert "committed turn" in html
+    assert "live turn" not in html  # live folded into history, not doubled
+    app_window._toggle_chat_log()  # close for clean teardown
 
 def test_tray_skipped_offscreen(app_window):
     """Offscreen QPA reports a tray but segfaults on show() — the app must
