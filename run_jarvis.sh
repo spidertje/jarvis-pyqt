@@ -19,5 +19,13 @@ fi
 # Change to the directory where you cloned jarvis-pyqt (if not already there)
 cd "$(dirname "$0")"
 
+# Prefer the project venv if present: wake-word deps (openwakeword,
+# onnxruntime) are installed only there — bare system python3 silently
+# disables the wake word ("No module named 'openwakeword'").
+PY="python3"
+if [ -x ".venv/bin/python" ]; then
+    PY=".venv/bin/python"
+fi
+
 # Run the application
-python3 src/main.py
+exec "$PY" src/main.py
