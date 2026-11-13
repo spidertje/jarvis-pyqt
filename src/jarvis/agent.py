@@ -423,7 +423,12 @@ class JarvisAgent:
     # ── Barge-in ─────────────────────────────────────────────────────
 
     def _ensure_barge_in(self) -> BargeInListener | None:
-        """Create (once) and start the barge-in mic monitor. None if unavailable."""
+        """Create (once) and start the barge-in mic monitor. None if unavailable.
+
+        The stream is opened per SPEAKING phase and closed when speaking ends
+        (see speaker()); keeping it open around the clock raced STT's own
+        capture stream on the same macOS AUHAL device (-50/-66740 errors).
+        """
         if self._barge_in is None:
             self._barge_in = BargeInListener(
                 on_speech=self.interrupt,
@@ -433,7 +438,8 @@ class JarvisAgent:
             )
             if not self._barge_in.available:
                 return None
-            self._barge_in.start()
+        # Re-arm the stream for this speaking phase (no-op if already open).
+        self._barge_in.start()
         return self._barge_in
 
     # ── Wake word (hands-free) ──────────────────────────────────────
@@ -671,6 +677,8 @@ class JarvisAgent:
                 spoken.append(sentence)
             if listener is not None:
                 listener.set_active(False)
+                # Release the mic so the NEXT listen cycle owns the device.
+                listener.stop()
 
         producer._emo_applied = False
         self._producer_task = producer_task = asyncio.create_task(producer())

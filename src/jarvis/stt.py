@@ -163,18 +163,31 @@ class WhisperSTT:
             f"sample_rate={self.config.sample_rate})"
         )
 
+        # ONE continuous InputStream for the whole listen — opening a fresh
+        # stream per chunk (sd.rec) hammered AUHAL with a stream open/close
+        # every 0.5s, which on non-Apple capture devices (webcam mic) spams
+        # '||PaMacCore (AUHAL)|| err=-50/-66740' and races other streams.
+        stream_kwargs = {
+            "samplerate": self.config.sample_rate,
+            "channels": self.config.channels,
+            "dtype": "int16",
+            "blocksize": chunk_size,
+        }
+        if self.config.device is not None:
+            stream_kwargs["device"] = self.config.device
+
+        try:
+            stream = sd.InputStream(**stream_kwargs)
+            await asyncio.to_thread(stream.start)
+        except Exception as e:
+            logger.error(f"Could not open microphone stream: {e}")
+            return None
+
         try:
             while True:
-                # Record a chunk from microphone (offload blocking call to thread)
-                rec_kwargs = {
-                    "samplerate": self.config.sample_rate,
-                    "channels": self.config.channels,
-                    "dtype": "int16",
-                    "blocking": True,
-                }
-                if self.config.device is not None:
-                    rec_kwargs["device"] = self.config.device
-                chunk = await asyncio.to_thread(sd.rec, chunk_size, **rec_kwargs)
+                # Read a chunk from the open stream (offload blocking to thread)
+                data, _overflowed = await asyncio.to_thread(stream.read, chunk_size)
+                chunk = data
                 if chunk is None:
                     break
 
@@ -205,6 +218,14 @@ class WhisperSTT:
         except Exception as e:
             logger.error(f"Recording error: {e}")
             return None
+        finally:
+            # Always release the mic — a leaked stream here would collide
+            # with barge-in/wake-word streams on the next cycle.
+            try:
+                await asyncio.to_thread(stream.stop)
+                await asyncio.to_thread(stream.close)
+            except Exception:  # noqa: BLE001
+                pass
 
         if not accumulated:
             logger.info("No audio captured")

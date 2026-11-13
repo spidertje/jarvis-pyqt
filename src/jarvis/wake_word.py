@@ -76,8 +76,21 @@ class WakeWordDetector:
     # ── lifecycle ─────────────────────────────────────────────────
 
     def set_active(self, active: bool) -> None:
-        """Enable/disable detection (call when entering/leaving IDLE)."""
+        """Enable/disable detection (call when entering/leaving IDLE).
+
+        Deactivating also RELEASES the mic stream: a callback stream held
+        open while detection is off still occupies the device, and on macOS
+        AUHAL capture devices a second concurrent stream errors out
+        (-50/-66740) — which starved STT's listen cycle. Re-activating
+        re-opens the stream.
+        """
         self._active = active
+        if not active:
+            if self._stream is not None:
+                self.stop()
+                self._active = False  # stop() cleared it
+        elif self.available and self._stream is None:
+            self.start()
 
     def start(self) -> None:
         """Start the input stream (no-op if already started or unavailable)."""
