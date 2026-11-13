@@ -440,6 +440,16 @@ class JarvisApp(QWidget):
             self.restoreGeometry(geo)
         else:
             self.resize(800, 600)
+        # A frameless window whose bottom bar/panels start hidden has a
+        # tiny layout minimum — an earlier run could persist a collapsed
+        # geometry (~241x100). Restoring that made every later content
+        # change (status pills filling in, bottom bar revealing on the
+        # face transition) grow the window step by step — the canvas
+        # visibly kept resizing. Floor it: sane minimum size, and ignore
+        # any restored geometry below it.
+        self.setMinimumSize(640, 480)
+        if self.width() < 640 or self.height() < 480:
+            self.resize(800, 600)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
