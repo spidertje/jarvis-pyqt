@@ -193,7 +193,7 @@ class AppConfig:
     # Appearance
     palette_index: int = 0
     contrast_boost: int = 100
-    frontend: str = "arc"  # 'arc' | 'smoke'
+    frontend: str = "arc"  # 'arc' | 'smoke' | 'smiley' | 'goddess' | 'bender'
     # Assistant
     assistant_name: str = "Jarvis"
 

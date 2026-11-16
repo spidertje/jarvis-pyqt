@@ -1183,12 +1183,16 @@ class SettingsDialog(QDialog):
         self.frontend_combo.setFixedHeight(30)
         self.frontend_combo.addItem("Arc Reactor", "arc")
         self.frontend_combo.addItem("Smoke Face (emotive)", "smoke")
+        self.frontend_combo.addItem("Smiley (solid)", "smiley")
+        self.frontend_combo.addItem("Goddess (solid)", "goddess")
+        self.frontend_combo.addItem("Robot (solid)", "bender")
         self.frontend_combo.setStyleSheet(
             "QComboBox{background:rgba(0,0,0,60);border:1px solid rgba(0,200,255,80);"
             "border-radius:4px;padding:6px 10px;color:#e0e0e0;font-size:13px;}"
         )
         cur_fe = getattr(config, "frontend", "arc") or "arc"
-        self.frontend_combo.setCurrentIndex(1 if cur_fe == "smoke" else 0)
+        idx = {"arc": 0, "smoke": 1, "smiley": 2, "goddess": 3, "bender": 4}.get(cur_fe, 0)
+        self.frontend_combo.setCurrentIndex(idx)
         self.frontend_combo.currentIndexChanged.connect(self._on_frontend_changed)
         layout.addWidget(self.frontend_combo)
         layout.addSpacing(10)

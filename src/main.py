@@ -47,6 +47,7 @@ from jarvis.face import FaceConfig
 from jarvis.face_screen import FaceRecScreen
 from jarvis.hud_overlay import HUDOverlay
 from jarvis.smoke_face import SmokeFaceHUD
+from jarvis.solid_face import SolidFaceHUD
 from jarvis.hud_panels import HUDPanels
 from jarvis.profile import PALETTE_HUES, Profile
 from jarvis.settings import SettingsDialog
@@ -263,6 +264,9 @@ class JarvisApp(QWidget):
         # HUD overlay (background layer — visible underneath face screen)
         self.hud_arc = HUDOverlay()
         self.hud_smoke = SmokeFaceHUD()
+        self.hud_smiley = SolidFaceHUD("smiley")
+        self.hud_goddess = SolidFaceHUD("goddess")
+        self.hud_bender = SolidFaceHUD("bender")
         self._frontend = "arc"  # refined in _setup after AppConfig load
         self.hud = None
         self._apply_frontend()
@@ -668,7 +672,8 @@ class JarvisApp(QWidget):
         """Keep the HUD canvas filling the window (it scales internally)."""
         super().resizeEvent(event)
         size = event.size()
-        for h in (self.hud_arc, self.hud_smoke, self.face_screen):
+        for h in (self.hud_arc, self.hud_smoke, self.hud_smiley, self.hud_goddess,
+                  self.hud_bender, self.face_screen):
             if h is not None:
                 h.resize(size)
 
@@ -890,11 +895,16 @@ class JarvisApp(QWidget):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Wake word start failed (push-to-talk still works): {e}")
 
+    FRONTEND_KEY = {"arc": "hud_arc", "smoke": "hud_smoke", "smiley": "hud_smiley",
+                    "goddess": "hud_goddess", "bender": "hud_bender"}
+
     def _apply_frontend(self):
-        """Swap visible HUD frontend ('arc' | 'smoke'), keeping state in sync."""
-        for h in (self.hud_arc, self.hud_smoke):
+        """Swap visible HUD frontend, keeping state in sync."""
+        for h in (self.hud_arc, self.hud_smoke, self.hud_smiley, self.hud_goddess,
+                  self.hud_bender):
             h.hide()
-        self.hud = self.hud_smoke if self._frontend == "smoke" else self.hud_arc
+        attr = self.FRONTEND_KEY.get(self._frontend, "hud_arc")
+        self.hud = getattr(self, attr)
         self.hud.resize(800, 600)
         self.hud.move(0, 0)
         self.hud.show()
@@ -913,11 +923,15 @@ class JarvisApp(QWidget):
                                      self.agent._active_profile.accent_hue)
         except Exception as e:  # noqa: BLE001 (pre-agent startup call)
             logger.debug(f"_apply_frontend sync deferred: {e}")
-        if self._frontend == "smoke":
+        if self._frontend != "arc":
             self.hud.raise_()
 
     def _cycle_frontend(self):
-        self._frontend = "arc" if self._frontend == "smoke" else "smoke"
+        order = ["arc", "smoke", "smiley", "goddess", "bender"]
+        try:
+            self._frontend = order[(order.index(self._frontend) + 1) % len(order)]
+        except ValueError:
+            self._frontend = "arc"
         try:
             self.app_config.frontend = self._frontend
             self.app_config.save()
