@@ -687,14 +687,26 @@ class JarvisApp(QWidget):
         super().mouseReleaseEvent(event)
 
     def _update_status_pills(self):
-        """Persistent ● LLM ● STT ● TTS badges (C13)."""
-        a = self.agent
-        try:
-            llm = bool(a.llm_base_url)
-            stt = bool(getattr(a.stt, "_connected", False))
-            tts = bool(getattr(a.tts, "_connected", False))
-        except Exception:
-            llm = stt = tts = False
+        """Persistent ● LLM ● STT ● TTS badges (C13).
+
+        Colors reflect LIVE reachability (updated by the health timer in
+        _service_health_tick), not mere configuration. Reads must stay
+        defensive: an earlier version referenced a non-existent
+        agent.llm_base_url, the try/except swallowed the AttributeError
+        and left every pill red even with all services up.
+        """
+        state = self.__dict__.get("_service_health")
+        if state is None:
+            # No probe yet — optimistic config-level fallback.
+            try:
+                cfg = self.agent.config
+                llm = bool(cfg.llm_base_url)
+                stt = bool(getattr(self.agent.stt, "_connected", False))
+                tts = bool(getattr(self.agent.tts, "_connected", False))
+            except Exception:
+                llm = stt = tts = False
+        else:
+            llm, stt, tts = state
         col = lambda ok: self._theme.ok if ok else self._theme.error
         parts = [
             f"<span style='color:{col(llm)}'>● LLM</span>",
@@ -704,6 +716,51 @@ class JarvisApp(QWidget):
         last = getattr(self.agent.chat, "last_error", None) or ""
         self.status_pill.setText("  ".join(parts))
         self.status_pill.setToolTip(("Last LLM error: " + last) if last else "All connections nominal")
+
+    def _start_health_timer(self) -> None:
+        """Probe LLM/STT/TTS reachability every 30s and re-color the pills.
+
+        The probe runs on the asyncio EventLoopThread (same pattern as
+        _init_services); only the RESULT crosses back via the queued
+        _status_updated signal — Qt widgets are never touched off-thread.
+        """
+        self._health_timer = QTimer(self)
+        self._health_timer.setInterval(30_000)
+        self._health_timer.timeout.connect(self._service_health_tick)
+        self._health_timer.start()
+        self._service_health_tick()  # first probe right away
+
+    def _service_health_tick(self) -> None:
+        loop = self._event_loop
+        if loop is None or not self._running:
+            return
+
+        async def _probe():
+            from jarvis.probe import probe_llm, probe_stt, probe_tts
+
+            cfg = self.agent.config
+            stt_cfg = self.agent.stt.config
+            tts_cfg = self.agent.tts.config
+            vals = {
+                "llm_base_url": cfg.llm_base_url,
+                "llm_api_key": cfg.llm_api_key,
+                "llm_model": cfg.llm_model,
+                "stt_host": stt_cfg.host, "stt_port": stt_cfg.port,
+                "tts_host": tts_cfg.host, "tts_port": tts_cfg.port,
+                "tts_voice": tts_cfg.voice,
+            }
+            llm, stt, tts = await asyncio.gather(
+                probe_llm(vals), probe_stt(vals), probe_tts(vals),
+                return_exceptions=True,
+            )
+            ok = lambda r: isinstance(r, str) and r.startswith("OK")
+            self._service_health = (ok(llm), ok(stt), ok(tts))
+            self._status_updated.emit("__pills__")
+
+        try:
+            asyncio.run_coroutine_threadsafe(_probe(), loop)
+        except Exception:
+            pass
 
     # ── Live panel handlers (GUI thread) ─────────────────────────────
 
@@ -796,6 +853,8 @@ class JarvisApp(QWidget):
             self._on_services_ready(True)
         elif msg == "__partial__":
             self._on_services_ready(False)
+        elif msg == "__pills__":
+            self._update_status_pills()
         else:
             self.status_label.setText(msg)
 
@@ -807,6 +866,8 @@ class JarvisApp(QWidget):
             self.status_label.setText("⚠ Partial connection")
             print("Warning: Some services not connected")
         self._update_status_pills()
+        if not getattr(self, "_health_timer", None):
+            self._start_health_timer()
 
     async def _init_services(self):
         """Initialize all services on startup.
