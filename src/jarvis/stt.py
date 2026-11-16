@@ -14,6 +14,8 @@ Protocol:
 import asyncio
 import json
 import logging
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -121,16 +123,20 @@ class WhisperSTT:
         timeout: float = 5.0,
         silence_threshold: float = 100.0,
         on_voice_level: Callable[[float], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> str | None:
         """
         Record audio from microphone and transcribe it.
 
-        Records for up to `timeout` seconds, or stops on silence detection.
+        Records for up to `timeout` seconds (hard wall-clock cap), or stops
+        early on sustained silence / when ``should_stop()`` returns True.
 
         Args:
-             timeout: Max recording time in seconds
+            timeout: Max recording time in seconds (hard cap)
             silence_threshold: RMS amplitude threshold for silence detection
             on_voice_level: Optional callback(float) for mic amplitude (0–1)
+            should_stop: Optional pollable stop (e.g. agent interrupt) — the
+                mic is released promptly instead of after the cap.
 
         Returns:
             Transcribed text or None on failure.
@@ -150,89 +156,123 @@ class WhisperSTT:
         if self.config.device is None:
             self.config.device = self._find_input_device(sd)
 
-        # Record chunks, accumulating until silence or timeout
         chunk_duration = 0.5  # seconds
         chunk_size = int(self.config.sample_rate * chunk_duration)
-        accumulated = b""
-        silence_chunks = 0
-        max_silence_chunks = int(timeout / chunk_duration)
-        speech_detected = False
+        max_silence_chunks = max(1, int(timeout / chunk_duration))
 
         logger.info(
             f"STT: Listening... (device={self.config.device}, "
-            f"sample_rate={self.config.sample_rate})"
+            f"sample_rate={self.config.sample_rate}, cap={timeout:.0f}s)"
         )
 
-        # ONE continuous InputStream for the whole listen — opening a fresh
-        # stream per chunk (sd.rec) hammered AUHAL with a stream open/close
-        # every 0.5s, which on non-Apple capture devices (webcam mic) spams
-        # '||PaMacCore (AUHAL)|| err=-50/-66740' and races other streams.
-        stream_kwargs = {
-            "samplerate": self.config.sample_rate,
-            "channels": self.config.channels,
-            "dtype": "int16",
-            "blocksize": chunk_size,
-        }
-        if self.config.device is not None:
-            stream_kwargs["device"] = self.config.device
+        # ALL PortAudio operations (open/read/stop/close) happen inside ONE
+        # worker thread. Two bugs fixed by this structure:
+        #  1) no hard cap before: `timeout` only counted consecutive silent
+        #     chunks, so a noisy room recorded forever until the 90s voice
+        #     timeout cancelled us.
+        #  2) closing the stream in this coroutine's finally, while an
+        #     asyncio.to_thread(stream.read) worker was still blocked in
+        #     PortAudio -> use-after-free SEGFAULT on macOS. Now the stream
+        #     lifetime belongs to the worker; asyncio cancellation can never
+        #     tear it down mid-read, and should_stop()/the cap end it within
+        #     one chunk.
+        result: dict = {}
+        worker_stop = threading.Event()  # set on cancel so the worker exits promptly
 
-        try:
-            stream = sd.InputStream(**stream_kwargs)
-            await asyncio.to_thread(stream.start)
-        except Exception as e:
-            logger.error(f"Could not open microphone stream: {e}")
-            return None
-
-        try:
-            while True:
-                # Read a chunk from the open stream (offload blocking to thread)
-                data, _overflowed = await asyncio.to_thread(stream.read, chunk_size)
-                chunk = data
-                if chunk is None:
-                    break
-
-                # Convert numpy array to bytes
-                chunk_bytes = chunk.tobytes()
-                accumulated += chunk_bytes
-
-                # Report voice level to callback (normalized 0–1)
-                if on_voice_level is not None:
-                    samples = np.frombuffer(chunk_bytes, dtype=np.int16)
-                    rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
-                    level = min(1.0, rms / 30.0)  # Webcam mic: 30+ RMS = full scale
-                    on_voice_level(level)
-
-                # Check for silence
-                if self._is_silence(chunk_bytes, silence_threshold):
-                    silence_chunks += 1
-                    if silence_chunks >= max_silence_chunks:
-                        logger.info(
-                            f"Silence detected after "
-                            f"{len(accumulated) / self.config.width / self.config.sample_rate:.1f}s"
-                        )
+        def _record() -> None:
+            accumulated = b""
+            silence_chunks = 0
+            speech_detected = False
+            stream = None
+            deadline = time.monotonic() + max(timeout, 1.0)
+            try:
+                stream_kwargs = {
+                    "samplerate": self.config.sample_rate,
+                    "channels": self.config.channels,
+                    "dtype": "int16",
+                    "blocksize": chunk_size,
+                }
+                if self.config.device is not None:
+                    stream_kwargs["device"] = self.config.device
+                stream = sd.InputStream(**stream_kwargs)
+                stream.start()
+                while True:
+                    if worker_stop.is_set() or (
+                        should_stop is not None and should_stop()
+                    ):
+                        logger.info("STT: stop requested — releasing mic")
                         break
-                else:
-                    silence_chunks = 0
-                    speech_detected = True
+                    if time.monotonic() >= deadline:
+                        logger.info("STT: recording cap reached")
+                        break
+                    data, _overflowed = stream.read(chunk_size)
+                    if data is None:
+                        break
+                    chunk_bytes = data.tobytes()
+                    accumulated += chunk_bytes
 
-        except Exception as e:
+                    if on_voice_level is not None:
+                        samples = np.frombuffer(chunk_bytes, dtype=np.int16)
+                        rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+                        level = min(1.0, rms / 30.0)  # Webcam mic: 30+ RMS = full scale
+                        on_voice_level(level)
+
+                    if self._is_silence(chunk_bytes, silence_threshold):
+                        silence_chunks += 1
+                        if silence_chunks >= max_silence_chunks:
+                            logger.info(
+                                f"Silence detected after "
+                                f"{len(accumulated) / self.config.width / self.config.sample_rate:.1f}s"
+                            )
+                            break
+                    else:
+                        silence_chunks = 0
+                        speech_detected = True
+            except Exception as e:  # noqa: BLE001
+                result["error"] = e
+            finally:
+                # Close on the same thread that opened it — never racing
+                # a blocked read (that race segfaulted on macOS).
+                if stream is not None:
+                    try:
+                        stream.stop()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        stream.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+            result["audio"] = accumulated
+            result["speech"] = speech_detected
+
+        # shield(): if the voice cycle is cancelled/timed out, the executor
+        # worker is NOT abandoned mid-read — it keeps ownership of the
+        # stream and exits via should_stop()/deadline within one chunk.
+        fut = asyncio.shield(
+            asyncio.get_running_loop().run_in_executor(None, _record))
+        try:
+            await fut
+        except asyncio.CancelledError:
+            # Release the worker cooperatively; it owns the stream and will
+            # close it after its current read returns (never mid-read).
+            worker_stop.set()
+            logger.info("STT: listen cancelled — worker releasing mic")
+            raise
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Recording error: {e}")
             return None
-        finally:
-            # Always release the mic — a leaked stream here would collide
-            # with barge-in/wake-word streams on the next cycle.
-            try:
-                await asyncio.to_thread(stream.stop)
-                await asyncio.to_thread(stream.close)
-            except Exception:  # noqa: BLE001
-                pass
 
+        if "error" in result:
+            logger.error(f"Recording error: {result['error']}")
+            return None
+
+        accumulated = result.get("audio", b"")
         if not accumulated:
             logger.info("No audio captured")
             return None
 
         # If we never detected speech, treat as no speech
-        if not speech_detected:
+        if not result.get("speech"):
             logger.info("No speech detected")
             return None
 

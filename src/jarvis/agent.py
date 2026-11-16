@@ -58,6 +58,10 @@ class AgentConfig:
     llm_model: str | None = None
     # STT silence timeout
     silence_timeout: float = 2.0
+    # Hard wall-clock cap for one listen() recording (seconds). Guards the
+    # 90s voice-cycle timeout when the room is noisy and silence-gating
+    # never triggers. 0 = no cap (not recommended).
+    listen_cap: float = 15.0
     # STT detection sensitivity (RMS amplitude threshold — lower = more sensitive)
     silence_threshold: float = 100.0
     # Barge-in sensitivity (16-bit RMS scale; higher = less sensitive)
@@ -601,9 +605,10 @@ class JarvisAgent:
         self._set_state(JarvisState.LISTENING)
         logger.info("STT: Starting listen cycle")
         text = await self.stt.listen(
-            timeout=self.config.silence_timeout * 4,
+            timeout=min(self.config.silence_timeout * 4, self.config.listen_cap or 15.0),
             silence_threshold=self.config.silence_threshold,
             on_voice_level=self._on_voice_level,
+            should_stop=self._stop_evt.is_set,
         )
         logger.info(f"STT: Listen returned: {text!r}")
         if not text:
