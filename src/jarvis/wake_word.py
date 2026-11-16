@@ -57,6 +57,9 @@ class WakeWordDetector:
         # on the MODEL's names, so scores.get('hey_jarvis') would always
         # miss and the wake word would silently never fire.
         self._model_key = self.word
+        self._dbg_peak = 0.0
+        self._dbg_frames = None
+        self._dbg_t0 = 0.0
 
         if self._model is None:
             self._model = self._load_model()
@@ -218,6 +221,21 @@ class WakeWordDetector:
             # With patience applied the score is 0.0 unless the word was
             # sustained above threshold for `patience` consecutive frames.
             score = float(scores.get(self._model_key, 0.0))
+            if score > self._dbg_peak:
+                self._dbg_peak = score
+            if self._dbg_frames is None:
+                self._dbg_frames = 0
+                self._dbg_t0 = now
+            else:
+                self._dbg_frames += 1
+                if now - self._dbg_t0 >= 5.0:
+                    rms = float(np.sqrt((samples.astype(np.float32) ** 2).mean()))
+                    logger.info(
+                        f"WAKE-DEBUG: {self._dbg_frames} frames/5s "
+                        f"mic_rms={rms:.0f} peak_score={self._dbg_peak:.3f}")
+                    self._dbg_frames = 0
+                    self._dbg_t0 = now
+                    self._dbg_peak = 0.0
             if score > 0.0:
                 self._last_fire = now
                 logger.info(f"Wake word detected: {self.word!r} (score={score:.3f})")
