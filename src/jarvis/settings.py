@@ -2,10 +2,12 @@
 Jarvis Settings - Preferences dialog for API endpoints and DB config.
 """
 
+import asyncio
 import logging
+import threading
 from collections.abc import Callable
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -27,12 +29,16 @@ from PyQt6.QtWidgets import (
 )
 
 from jarvis.face import FaceConfig
+from jarvis.probe import probe_services
 from jarvis.profile import PALETTE_HUES
 
 logger = logging.getLogger(__name__)
 
 class SettingsDialog(QDialog):
     """Settings/preferences dialog for Jarvis configuration."""
+
+    #: Worker-thread probe results ({name: "OK: ..."/"FAIL: ..."}) → GUI thread.
+    _test_results = pyqtSignal(object)
 
     def __init__(self, agent_config=None, app_config=None, agent=None, parent=None):
         super().__init__(parent)
@@ -141,6 +147,7 @@ class SettingsDialog(QDialog):
             }
         """)
         self.test_btn.clicked.connect(self._test_connection)
+        self._test_results.connect(self._show_test_results)
         btn_layout.addWidget(self.test_btn)
 
         btn_layout.addStretch()
@@ -958,57 +965,41 @@ class SettingsDialog(QDialog):
         )
 
     def _test_connection(self):
-        """Test database connection with current settings."""
-        values = self._get_values()
+        """Probe all four services (DB, LLM, STT, TTS) with current settings.
 
-        # Only test DB since LLM/STT/TTS are async
-        host = values.get("db_host", "localhost")
-        port = values.get("db_port", 3306)
-        user = values.get("db_user", "root")
-        password = values.get("db_password", "")
-        dbname = values.get("db_name", "test")
+        Runs on a worker thread — pymysql and the Wyoming/LLM clients are
+        blocking/async and must never freeze the dialog, and their results
+        are marshalled back to the GUI thread via _test_results (Qt objects
+        are off-limits off the GUI thread).
+        """
+        values = dict(self._get_values())
 
         self.test_btn.setEnabled(False)
-        self.test_btn.setText("⏳ Testing...")
+        self.test_btn.setText("⏳ Testing DB / LLM / STT / TTS…")
+        threading.Thread(
+            target=self._run_connection_tests, args=(values,), daemon=True
+        ).start()
 
-        try:
-            import pymysql
+    def _run_connection_tests(self, values: dict) -> None:
+        results = asyncio.run(probe_services(values))
+        self._test_results.emit(results)
 
-            conn = pymysql.connect(
-                host=host,
-                port=port,
-                user=user,
-                password=password,
-                database=dbname,
-                cursorclass=pymysql.cursors.DictCursor,
-            )
-            with conn.cursor() as cur:
-                cur.execute("SELECT VERSION()")
-                version = cur.fetchone()["VERSION()"]
-
+    def _show_test_results(self, results: dict) -> None:
+        self.test_btn.setEnabled(True)
+        failed = {k: v for k, v in results.items() if v.startswith("FAIL")}
+        lines = "\n".join(f"  {k}: {v}" for k, v in results.items())
+        if not failed:
+            self.test_btn.setText("✅ All connected")
             QMessageBox.information(
-                self,
-                "Connection Successful",
-                f"Connected to MariaDB {version}\n\n"
-                f"Host: {host}:{port}\n"
-                f"Database: {dbname}\n"
-                f"User: {user}",
-            )
-            self.test_btn.setText("✅ Connected")
-        except pymysql.Error as e:
+                self, "Services OK",
+                f"All services responded:\n\n{lines}")
+        else:
+            self.test_btn.setText(f"❌ {len(failed)} of {len(results)} failed")
             QMessageBox.critical(
-                self,
-                "Connection Failed",
-                f"Error: {e}\n\n"
-                f"Check:\n"
-                f"• Host: {host}:{port}\n"
-                f"• User: {user}\n"
-                f"• Password\n"
-                f"• Database: {dbname}",
-            )
-            self.test_btn.setText("❌ Failed")
-        finally:
-            self.test_btn.setEnabled(True)
+                self, "Service check",
+                f"Failed: {', '.join(failed)}\n\n"
+                f"Full results:\n\n{lines}\n\n"
+                "Check the hosts/ports/keys in the tabs above.")
 
     def _build_profiles_tab(self):
         """Profiles tab — view/edit face↔profile links and switch active profile."""
