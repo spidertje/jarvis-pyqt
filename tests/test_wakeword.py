@@ -98,12 +98,14 @@ class TestDetectorBasics:
         detector.threshold = 0.8
         assert detector.threshold == 0.8
 
-    def test_predict_receives_int16_and_params(self, detector):
+    def test_predict_receives_int16_raw_scores(self, detector):
+        # Detector asks the model for RAW scores (no threshold/patience
+        # passed — openwakeword zeroes sub-threshold scores, hiding signal)
+        # and applies threshold+patience itself.
         detector.set_active(True)
         detector._callback(_frame(0.5), 1280, None, None)
         m = detector._model
-        assert m.threshold == {"hey_jarvis": detector.threshold}
-        assert m.patience == {"hey_jarvis": detector.patience}
+        assert m.threshold is None and m.patience is None
 
 
 class TestDetectorFiring:
@@ -143,6 +145,8 @@ class TestDetectorFiring:
             if detector._calls:
                 break
         detector._last_fire = time.monotonic() - detector.cooldown_s - 0.1
+        # two consecutive high frames = threshold + patience met again
+        detector._callback(_frame(0.5), 1280, None, None)
         detector._callback(_frame(0.5), 1280, None, None)
         assert len(detector._calls) == 2
 

@@ -60,6 +60,7 @@ class WakeWordDetector:
         self._dbg_peak = 0.0
         self._dbg_frames = None
         self._dbg_t0 = 0.0
+        self._hit_run = 0
 
         if self._model is None:
             self._model = self._load_model()
@@ -217,15 +218,17 @@ class WakeWordDetector:
 
             # float32 [-1,1] → int16, as openWakeWord expects.
             samples = np.clip(indata[:, 0] * 32767.0, -32768, 32767).astype(np.int16)
-            scores = self._model.predict(
-                samples,
-                threshold={self._model_key: self.threshold},
-                patience={self._model_key: self.patience},
-            )
-            # With patience applied the score is 0.0 unless the word was
-            # sustained above threshold for `patience` consecutive frames.
+            # Ask the model for RAW scores (threshold 0): openwakeword
+            # zeroes anything below the passed threshold, which hides the
+            # real signal and makes tuning impossible. We apply threshold
+            # + patience (consecutive frames) ourselves.
+            scores = self._model.predict(samples)
             score = float(scores.get(self._model_key, 0.0))
-            if score > self._dbg_peak:
+            if score >= self.threshold:
+                self._hit_run += 1
+            else:
+                self._hit_run = 0
+            if self._dbg_peak < score:
                 self._dbg_peak = score
             if self._dbg_frames is None:
                 self._dbg_frames = 0
@@ -240,7 +243,8 @@ class WakeWordDetector:
                     self._dbg_frames = 0
                     self._dbg_t0 = now
                     self._dbg_peak = 0.0
-            if score > 0.0:
+            if self._hit_run >= self.patience:
+                self._hit_run = 0
                 self._last_fire = now
                 logger.info(f"Wake word detected: {self.word!r} (score={score:.3f})")
                 try:
