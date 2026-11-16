@@ -183,6 +183,10 @@ class WakeWordDetector:
                 kwargs["device"] = self.device
             self._stream = self._sd.InputStream(**kwargs)
             self._stream.start()
+            # A directly-started detector must be armed: agent.start_wake_word
+            # calls start() without set_active(), and _callback gates on
+            # _active — without this the stream ran but frames were dropped.
+            self._active = True
             logger.info(f"Wake word detector started (word={self.word!r})")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Could not start wake word detector: {e}")
