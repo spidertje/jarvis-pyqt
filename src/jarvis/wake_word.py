@@ -51,9 +51,39 @@ class WakeWordDetector:
         self._sd = None
         self._stream = None
         self._model = model
+        # openwakeword model keys are versioned ('hey_jarvis_v0.1'); the
+        # user-facing word is the bare name ('hey_jarvis'). Resolving the
+        # real key here is essential — scores.predict() returns dict keys
+        # on the MODEL's names, so scores.get('hey_jarvis') would always
+        # miss and the wake word would silently never fire.
+        self._model_key = self.word
 
         if self._model is None:
             self._model = self._load_model()
+        self._resolve_model_key()
+
+    def _resolve_model_key(self) -> None:
+        if self._model is None:
+            return
+        keys = list(getattr(self._model, "models", {}) or {})
+        if not keys:
+            return
+
+        def base(name: str) -> str:
+            return name.replace("-", "_").rsplit("_v", 1)[0].rstrip("_")
+
+        if self.word in keys:
+            self._model_key = self.word
+            return
+        want = base(self.word)
+        for k in keys:
+            if base(k) == want:
+                self._model_key = k
+                logger.info(f"Wake word {self.word!r} -> model key {k!r}")
+                return
+        logger.warning(
+            f"Wake word {self.word!r} not in loaded models {keys}; "
+            "wake word will not fire")
 
     # ── model ─────────────────────────────────────────────────────
 
@@ -182,12 +212,12 @@ class WakeWordDetector:
             samples = np.clip(indata[:, 0] * 32767.0, -32768, 32767).astype(np.int16)
             scores = self._model.predict(
                 samples,
-                threshold={self.word: self.threshold},
-                patience={self.word: self.patience},
+                threshold={self._model_key: self.threshold},
+                patience={self._model_key: self.patience},
             )
             # With patience applied the score is 0.0 unless the word was
             # sustained above threshold for `patience` consecutive frames.
-            score = float(scores.get(self.word, 0.0))
+            score = float(scores.get(self._model_key, 0.0))
             if score > 0.0:
                 self._last_fire = now
                 logger.info(f"Wake word detected: {self.word!r} (score={score:.3f})")
