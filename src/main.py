@@ -731,8 +731,8 @@ class JarvisApp(QWidget):
         self._service_health_tick()  # first probe right away
 
     def _service_health_tick(self) -> None:
-        loop = self._event_loop
-        if loop is None or not self._running:
+        loop = getattr(self.event_loop_thread, "loop", None)
+        if loop is None or loop.is_closed() or not self._running:
             return
 
         async def _probe():
