@@ -129,10 +129,17 @@ def main():
         else:
             c = px(270, 360)  # grey metal head left-of-centre
             el["metal_grey"] = abs(c.red() - c.green()) < 40 and abs(c.green() - c.blue()) < 45 and c.red() > 90
-            # glowing eye pixels near nominal eye centre row
-            glows = sum(1 for xx in (318, 402)
-                        if (lambda q: q.red() > 170 and q.green() > 160 and q.red() - q.blue() > 25)(px(xx, 302)))
-            el["glow_eyes"] = glows >= 1
+            # glowing eye pixels: scan a box around each nominal eye centre
+            def glowcount(x720, y720):
+                n = 0
+                for xx in range(x720 - 14, x720 + 15, 4):
+                    for yy in range(y720 - 14, y720 + 15, 4):
+                        q = px(xx, yy)
+                        if q.red() > 170 and q.green() > 150 and q.red() - q.blue() > 20:
+                            n += 1
+                return n
+            gL, gR = glowcount(318, 302), glowcount(402, 302)
+            el["glow_eyes"] = gL >= 3 and gR >= 3
         assert all(el.values()), f"{figure}: element probes failed {el}"
         results[figure] = dict(initial=round(frac0, 3), speaking=round(frac_sp, 3),
                                final=round(frac_end, 3), elements=el)
