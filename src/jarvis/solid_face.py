@@ -385,11 +385,11 @@ class SolidFaceHUD(QWidget):
             # at HUD scale the original rate read as constant eye-darting.
             # Saccades are rarer, and amplitude scales with emotional
             # turbulence — calm gaze is nearly still, fear/anger stay alive.
-            self._sac_at = t_now + 1.5 + random.random() * 3.5
-            amp = 0.30 + 0.40 * max(0.0, min(1.2, self.P["turb"]))
+            self._sac_at = t_now + 2.5 + random.random() * 5.0
+            amp = 0.18 + 0.30 * max(0.0, min(1.2, self.P["turb"]))
             self._sac_tx = (random.random() - 0.5) * 0.5 * amp
             self._sac_ty = (random.random() - 0.5) * 0.35 * amp
-        rate = 0.16 if self.figure == "bender" else 0.07
+        rate = 0.10 if self.figure == "bender" else 0.045
         k = min(1.0, dt * rate * 30)
         self._sac_x += (self._sac_tx - self._sac_x) * k
         self._sac_y += (self._sac_ty - self._sac_y) * k
