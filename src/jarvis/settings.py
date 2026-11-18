@@ -1303,8 +1303,8 @@ class SettingsDialog(QDialog):
         return group
 
     def _on_frontend_changed(self, index: int):
-        """Switch HUD frontend live (arc reactor / smoke face)."""
-        fe = "smoke" if index == 1 else "arc"
+        """Switch HUD frontend live (any of the registered frontends)."""
+        fe = self.frontend_combo.itemData(index) or "arc"
         if self.agent_config:
             self.agent_config.frontend = fe
         parent = self.parent()

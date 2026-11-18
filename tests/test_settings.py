@@ -190,3 +190,43 @@ class TestSettingsDialogTabs:
     def test_on_palette_changed_updates_config(self, settings):
         settings._on_palette_changed(3)
         assert settings.agent_config.palette_index == 3
+
+
+class TestSettingsFrontendSelector:
+    """Regression: every dropdown entry must map to its real frontend key.
+
+    Bug fixed 2026-11-18: _on_frontend_changed had two-option logic
+    ("smoke" if index==1 else "arc"), so smiley/goddess/bender silently
+    fell back to arc reactor.
+    """
+
+    EXPECTED = ["arc", "smoke", "smiley", "goddess", "bender"]
+
+    def test_combo_has_all_frontends(self, settings):
+        assert settings.frontend_combo.count() == 5
+        assert [settings.frontend_combo.itemData(i)
+                for i in range(5)] == self.EXPECTED
+
+    def test_each_index_selects_its_frontend(self, settings):
+        for i, fe in enumerate(self.EXPECTED):
+            settings._on_frontend_changed(i)
+            assert settings.agent_config.frontend == fe, f"index {i}"
+
+    def test_selected_index_propagates_to_parent(self, settings):
+        parent = MagicMock()
+        orig = settings.parent
+        settings.parent = lambda: parent
+        try:
+            settings._on_frontend_changed(3)  # goddess
+        finally:
+            settings.parent = orig
+        assert parent._frontend == "goddess"
+        parent._apply_frontend.assert_called_once()
+
+    @patch("jarvis.settings.QMessageBox")
+    def test_save_persists_non_arc_frontend(self, mock_msgbox, settings, monkeypatch, tmp_path):
+        monkeypatch.setattr("jarvis.config._config_dir", lambda: tmp_path)
+        settings.frontend_combo.setCurrentIndex(4)  # bender (triggers live swap)
+        settings._save_settings()
+        assert settings.agent_config.frontend == "bender"
+        assert settings.app_config.frontend == "bender"
