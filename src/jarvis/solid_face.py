@@ -352,21 +352,32 @@ class SolidFaceHUD(QWidget):
 
     # ── micro-gestures ──────────────────────────────────────────────────
     def _next_blink(self):
-        base = 2.0 if self.figure == "bender" else 2.3
-        span = 3.6 if self.figure == "bender" else 4.2
+        # Rarer than the web-port baseline (2.0-5.6s): at HUD scale the
+        # frequent fast flutter read as nervous eye-twitching.
+        base = 3.0 if self.figure == "bender" else 3.5
+        span = 4.5 if self.figure == "bender" else 5.0
         return time.monotonic() - self._t0 + random.uniform(base, base + span)
 
     def _blink(self, t_now):
+        # 0.32s close+open (was 0.13s): the 4-frame snap read as a eyelid
+        # flutter at HUD scale; this is near natural human blink tempo at 30fps.
+        D = 0.32
         if t_now >= self._blink_at and self._blink_left <= 0:
-            self._blink_left = 0.13
+            self._blink_left = D
+            # CRITICAL: re-arm the timer, else the gate re-triggers the
+            # moment a blink ends and the lids flutter continuously.
+            base = 3.0 if self.figure == "bender" else 3.5
+            span = 4.5 if self.figure == "bender" else 5.0
+            self._blink_at = t_now + random.uniform(base, base + span)
         if self._blink_left > 0:
             self._blink_left -= 1 / 30
             if self._blink_left < 0:
                 self._blink_left = 0.0
             b = max(self._blink_left, 0.0)
             if self.figure == "bender":  # mechanical shutter: snap down, snap up
-                return (0.13 - b) / 0.055 if b > 0.055 else b / 0.055
-            return math.sin(math.pi * (1 - b / 0.13))
+                mid = D / 2
+                return (D - b) / (mid * 0.6) if b > mid * 0.6 else b / (mid * 0.6)
+            return math.sin(math.pi * (1 - b / D))
         return 0.0
 
     def _micro(self, t_now):
