@@ -380,14 +380,24 @@ class SolidFaceHUD(QWidget):
             return math.sin(math.pi * (1 - b / D))
         return 0.0
 
+    def _brow_damp(self, e):
+        """Idle faces (low turbulence) barely move their brows; expressive
+        emotions keep the micro-raise amplitude."""
+        return 0.15 + 0.85 * max(0.0, min(1.0, e["turb"]))
+
     def _micro(self, t_now):
+        # Same re-arm bug as _blink had: the timer was armed once in
+        # __init__, so after the first pass the gate re-fired every 0.26s
+        # and the brows bounced non-stop. Now: rare (6-16s), and amplitude
+        # scales with turbulence so idle faces barely move their brows.
         if t_now >= self._micro_at and self._micro_left <= 0:
-            self._micro_left = 0.26
+            self._micro_left = 0.5
+            self._micro_at = t_now + random.uniform(6.0, 16.0)
         if self._micro_left > 0:
             self._micro_left -= 1 / 30
             if self._micro_left < 0:
                 self._micro_left = 0.0
-            return math.sin(math.pi * (1 - max(self._micro_left, 0.0) / 0.26))
+            return math.sin(math.pi * (1 - max(self._micro_left, 0.0) / 0.5))
         return 0.0
 
     def _saccade(self, t_now, dt):
@@ -586,7 +596,7 @@ class SolidFaceHUD(QWidget):
         CX, EX = self.CX, self.EX
         if self.figure == "bender":
             ER = self.ER
-            raise_ = self._micro(self._tnow) * 0.30
+            raise_ = self._micro(self._tnow) * 0.30 * self._brow_damp(e)
             trem = fbm(self._tnow * 22, 3) * W * 0.004 * e["turb"] if e["turb"] > 0.85 else 0.0
             brow_y = self.EY - ER * 1.45 + e["browHeight"] * W * 0.05 + raise_ * W * 0.05 + trem
             for side in (-1, 1):
@@ -602,7 +612,7 @@ class SolidFaceHUD(QWidget):
                 pt.drawPath(pth)
             return
         EW = self.EW
-        raise_ = self._micro(self._tnow) * (0.35 if self.figure == "smiley" else 0.30)
+        raise_ = self._micro(self._tnow) * (0.35 if self.figure == "smiley" else 0.30) * self._brow_damp(e)
         trem = fbm(self._tnow * 20, 3) * W * (0.004 if self.figure == "smiley" else 0.0035) * e["turb"] if e["turb"] > (0.9 if self.figure == "smiley" else 0.85) else 0.0
         BY = self.EY - W * (0.052 if self.figure == "smiley" else 0.056)
         bh = (e["browHeight"] + raise_) * W * 0.05
@@ -1245,7 +1255,7 @@ class SolidFaceHUD(QWidget):
             pt.drawEllipse(QPointF(ecx, ecy), ring, ring)
 
         # unibrow plate
-        raise_ = self._micro(self._tnow) * 0.30
+        raise_ = self._micro(self._tnow) * 0.30 * self._brow_damp(e)
         trem = fbm(self._tnow * 22, 3) * W * 0.004 * e["turb"] if e["turb"] > 0.85 else 0.0
         brow_y = self.EY - ER * 1.45 + e["browHeight"] * W * 0.05 + raise_ * W * 0.05 + trem
         for side in (-1, 1):
