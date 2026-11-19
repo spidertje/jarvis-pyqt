@@ -21,25 +21,23 @@ import html as _html
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
     QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
 
 from jarvis.hud_panels import md_lite
-from jarvis.icons import icon as svg_icon
 
 
 class ChatLogWindow(QWidget):
-    """Scrollable two-sided conversation view with its own send box."""
+    """Scrollable two-sided conversation view with a history search box.
 
-    #: Emitted when the user hits Send here; main.py routes it through the
-    #: same chat dispatch as the toolbar input.
-    send_requested = pyqtSignal(str)
+    Typing to Jarvis lives in the toolbar input only; this window shows
+    the full DB-backed transcript and searches it.
+    """
+
     #: Emitted when the window is closed via its own close button, so the
     #: toolbar toggle can uncheck itself.
     closed = pyqtSignal()
@@ -94,37 +92,12 @@ class ChatLogWindow(QWidget):
         self.view.setFont(f)
         layout.addWidget(self.view, stretch=1)
 
-        # Send row — same dispatch path as the toolbar input.
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        self.input = QLineEdit()
-        self.input.setObjectName("chatLogInput")
-        self.input.setPlaceholderText("Type a message…")
-        self.input.setAccessibleName("Chat log input")
-        self.input.returnPressed.connect(self._on_send)
-        row.addWidget(self.input, stretch=1)
-        self.send_btn = QPushButton()
-        self.send_btn.setFixedSize(36, 32)
-        self.send_btn.setIcon(svg_icon("send", "#e6f0fa", 16))
-        self.send_btn.setToolTip("Send")
-        self.send_btn.setAccessibleName("Chat log send")
-        self.send_btn.clicked.connect(self._on_send)
-        row.addWidget(self.send_btn)
-        layout.addLayout(row)
-
         self._apply_qss()
         self._render()
 
     def closeEvent(self, event) -> None:
         self.closed.emit()
         super().closeEvent(event)
-
-    def _on_send(self) -> None:
-        text = self.input.text().strip()
-        if not text:
-            return
-        self.input.clear()
-        self.send_requested.emit(text)
 
     def _on_search(self) -> None:
         text = self.search.text().strip()
@@ -235,20 +208,6 @@ class ChatLogWindow(QWidget):
             border-radius: {t.radius}px;
             padding: 8px;
         }}
-        QLineEdit#chatLogInput {{
-            background: {t.surface_soft};
-            border: 1px solid {t.border};
-            border-radius: {max(6, t.radius - 4)}px;
-            padding: 7px 12px;
-            color: {t.text};
-        }}
-        QLineEdit#chatLogInput:focus {{ border-color: {t.accent}; }}
-        QPushButton {{
-            background: {t.accent_dim};
-            border: 2px solid {t.accent_line};
-            border-radius: 8px;
-        }}
-        QPushButton:hover {{ background: rgba(0, 200, 255, 150); }}
         QLineEdit#chatLogSearch {{
             background: {t.surface_soft};
             border: 1px solid {t.border};

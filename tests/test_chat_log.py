@@ -45,19 +45,14 @@ def test_live_turn_streaming(log_window):
     assert "noon" not in log_window.view.toHtml()
 
 
-def test_send_requested_signal(log_window, qtbot):
-    with qtbot.waitSignal(log_window.send_requested, timeout=1000) as blocker:
-        log_window.input.setText("hi there")
-        log_window.send_btn.click()
-    assert blocker.args == ["hi there"]
-    assert log_window.input.text() == ""
-
-
-def test_send_empty_ignored(log_window):
-    calls = []
-    log_window.send_requested.connect(calls.append)
-    log_window.send_btn.click()
-    assert calls == []
+def test_send_row_removed(log_window):
+    """History window is view/search only — typing lives in the toolbar box."""
+    assert not hasattr(log_window, "input")
+    assert not hasattr(log_window, "send_btn")
+    assert not hasattr(log_window, "send_requested")
+    log_window.show()
+    assert log_window.search.isVisible()
+    log_window.close()
 
 
 def test_search_signal_and_results(log_window, qtbot):

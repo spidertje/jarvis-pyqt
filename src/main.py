@@ -775,7 +775,6 @@ class JarvisApp(QWidget):
             self.chat_log = ChatLogWindow(theme=self._theme)
             self.chat_log.set_assistant_name(
                 getattr(self.agent.config, "assistant_name", "Jarvis"))
-            self.chat_log.send_requested.connect(self._send_from_chat_log)
             self.chat_log.closed.connect(lambda: self.chat_log_btn.setChecked(False))
             self.chat_log.search_requested.connect(self._search_chat_log)
             self.chat_log.search_cleared.connect(self._resync_chat_log_view)
@@ -825,13 +824,6 @@ class JarvisApp(QWidget):
             win.raise_()
             win.activateWindow()
             self.chat_log_btn.setChecked(True)
-
-    def _send_from_chat_log(self, text: str) -> None:
-        """Send box in the chat log → same dispatch as the toolbar input."""
-        self._status_updated.emit("Thinking...")
-        if self.event_loop_thread and self.event_loop_thread.loop:
-            asyncio.run_coroutine_threadsafe(
-                self._send_chat(text), self.event_loop_thread.loop)
 
     def _sync_chat_log_state(self, state: JarvisState) -> None:
         """Keep the log window's live turn in sync with agent state."""
