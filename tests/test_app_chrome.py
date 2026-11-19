@@ -33,21 +33,10 @@ def app_window(qtbot):
 
 
 def test_chrome_widgets_exist(app_window):
-    for name in ("bottom_bar", "mic_btn", "stop_btn",
+    for name in ("bottom_bar", "mic_btn", "stop_btn", "send_btn",
                  "settings_btn", "status_label", "status_pill",
-                 "panels", "hint_label", "chat_log_btn"):
+                 "chat_input", "panels", "hint_label", "chat_log_btn"):
         assert hasattr(app_window, name), f"missing {name}"
-
-
-def test_toolbar_chat_input_removed(app_window):
-    """The toolbar text box/send button are gone; typed chat lives in the
-    chat history window only (chat_log.input / send_btn)."""
-    assert not hasattr(app_window, "chat_input")
-    assert not hasattr(app_window, "send_btn")
-    assert not hasattr(app_window, "_on_send_clicked")
-    app_window._toggle_chat_log()
-    assert app_window.chat_log.input.isVisible()
-    app_window._toggle_chat_log()
 
 
 def test_chat_log_toggle(app_window):
