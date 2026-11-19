@@ -29,7 +29,6 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMenu,
     QPushButton,
     QSystemTrayIcon,
@@ -519,24 +518,6 @@ class JarvisApp(QWidget):
         self.status_pill.setToolTip("Service status: LLM / STT / TTS (last error on hover)")
         bar_layout.addWidget(self.status_pill, alignment=Qt.AlignmentFlag.AlignRight)
 
-        # Chat input
-        self.chat_input = QLineEdit()
-        self.chat_input.setPlaceholderText("Type a message…  (Space = talk)")
-        self.chat_input.setAccessibleName("Chat input")
-        self.chat_input.setStyleSheet(t.input_qss())
-        self.chat_input.returnPressed.connect(self._on_send_clicked)
-        bar_layout.addWidget(self.chat_input, alignment=Qt.AlignmentFlag.AlignRight, stretch=1)
-
-        # Send button
-        self.send_btn = QPushButton()
-        self.send_btn.setFixedSize(40, 35)
-        self.send_btn.setIcon(svg_icon("send", "#e6f0fa", 18))
-        self.send_btn.setToolTip("Send typed message")
-        self.send_btn.setAccessibleName("Send")
-        self.send_btn.setStyleSheet(t.button_qss( kind="accent", size=35))
-        self.send_btn.clicked.connect(self._on_send_clicked)
-        bar_layout.addWidget(self.send_btn, alignment=Qt.AlignmentFlag.AlignRight)
-
         # Chat log window button (toggles the full two-sided conversation view)
         self.chat_log_btn = QPushButton()
         self.chat_log_btn.setFixedSize(35, 35)
@@ -662,8 +643,7 @@ class JarvisApp(QWidget):
             chat_log.set_theme(t)
         self.bottom_bar.setStyleSheet(t.bottom_bar_qss())
         self.mic_btn.setStyleSheet(t.button_qss( kind="accent", size=40))
-        self.send_btn.setStyleSheet(t.button_qss( kind="accent", size=35))
-        self.chat_input.setStyleSheet(t.input_qss())
+
         self.settings_btn.setStyleSheet(t.button_qss( kind="ghost", size=35))
 
     # ── Window dragging (frameless window support) ───────────────────
@@ -826,6 +806,14 @@ class JarvisApp(QWidget):
             win.activateWindow()
             self.chat_log_btn.setChecked(True)
 
+    def _chat_typing_focus(self) -> bool:
+        """True when the caret sits in the chat history window's text inputs,
+        so Space types a space instead of triggering push-to-talk."""
+        win = getattr(self, "chat_log", None)
+        return win is not None and (
+            win.input.hasFocus() or win.search.hasFocus()
+        )
+
     def _send_from_chat_log(self, text: str) -> None:
         """Send box in the chat log → same dispatch as the toolbar input."""
         self._status_updated.emit("Thinking...")
@@ -976,7 +964,7 @@ class JarvisApp(QWidget):
 
     def keyPressEvent(self, event):
         """Global shortcuts: F2 cycles HUD frontend, Ctrl+H toggles the chat
-        log window, Esc clears chat input, Space pushes-to-talk."""
+        log window, Esc hides the window, Space pushes-to-talk."""
         if event.key() == Qt.Key.Key_F2:
             self._cycle_frontend()
             return
@@ -984,14 +972,11 @@ class JarvisApp(QWidget):
             self._toggle_chat_log()
             return
         if event.key() == Qt.Key.Key_Escape:
-            if self.chat_input.text():
-                self.chat_input.clear()
-                return
             self._tray_toggle_visible()
             return
         if (
             event.key() == Qt.Key.Key_Space
-            and not self.chat_input.hasFocus()
+            and not self._chat_typing_focus()
         ):
             self._toggle_voice()
             return
@@ -1341,16 +1326,6 @@ class JarvisApp(QWidget):
                 logger.error(f"Wake-word voice cycle error: {e}")
 
         self._voice_task = asyncio.run_coroutine_threadsafe(_run_once(), loop)
-
-    def _on_send_clicked(self):
-        """Sync wrapper — dispatches async _send_chat on the background event loop."""
-        text = self.chat_input.text().strip()
-        if not text:
-            return
-        self.chat_input.clear()
-        self._status_updated.emit("Thinking...")
-        if self.event_loop_thread and self.event_loop_thread.loop:
-            asyncio.run_coroutine_threadsafe(self._send_chat(text), self.event_loop_thread.loop)
 
     async def _send_chat(self, text: str):
         """Send a text message and get response (with optional TTS)."""

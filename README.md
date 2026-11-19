@@ -43,8 +43,9 @@ More emotion states — sad and angry:
 |---|---|---|
 | ![sad](docs/screenshots/solid-smiley-sad.png) | ![angry](docs/screenshots/solid-goddess-angry.png) | ![angry](docs/screenshots/solid-bender-angry.png) |
 
-Keyboard: **Space** = push-to-talk (when the chat box is not focused), **Esc** =
-clear chat input, **F2** = cycle HUD frontend (arc → smoke → smiley → goddess → robot).
+Keyboard: **Space** = push-to-talk (when the chat history text box is not
+focused), **Ctrl+H** = chat history window (type messages there too), **Esc** =
+hide the window, **F2** = cycle HUD frontend (arc → smoke → smiley → goddess → robot).
 
 Switch via **Settings → Appearance → HUD Frontend**, press **F2** to cycle,
 or set `frontend` in config / `JARVIS_FRONTEND=bender`.
