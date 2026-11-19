@@ -184,7 +184,12 @@ class ChatLogWindow(QWidget):
         name = "You" if role == "user" else self._assistant_name
         if when is not None:
             try:
-                name = f"{name}  {_html.escape(when.strftime('%Y-%m-%d %H:%M'))}"
+                # DB timestamps are UTC-naive (session pinned to +00:00);
+                # render in the viewer's local timezone.
+                from datetime import timezone as _tz
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=_tz.utc)
+                name = f"{name}  {_html.escape(when.astimezone().strftime('%Y-%m-%d %H:%M'))}"
             except AttributeError:
                 pass
         if role == "user":

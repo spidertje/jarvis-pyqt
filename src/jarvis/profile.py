@@ -166,6 +166,7 @@ class ProfileManager:
                 password=self.db_password or "",
                 database=self.db_name or "jarvis",
                 cursorclass=pymysql.cursors.DictCursor,
+                init_command="SET time_zone = '+00:00'",
             )
         else:
             # Drop/re-open dead sockets (MariaDB restart, idle timeout) so
@@ -182,6 +183,7 @@ class ProfileManager:
                         password=self.db_password or "",
                         database=self.db_name or "jarvis",
                         cursorclass=pymysql.cursors.DictCursor,
+                        init_command="SET time_zone = '+00:00'",
                     )
                 except Exception as e2:
                     logger.error(f"DB reconnect failed: {e2}")
@@ -258,7 +260,7 @@ class ProfileManager:
         try:
             fetched = self._chat_query(
                 "SELECT role, content, created_at FROM chat_messages "
-                "WHERE profile_name = %s ORDER BY id DESC LIMIT %s",
+                "WHERE profile_name = %s ORDER BY created_at DESC, id DESC LIMIT %s",
                 (profile_name, int(limit)),
             )
             return [dict(r) for r in reversed(fetched or ())]
@@ -273,7 +275,7 @@ class ProfileManager:
             fetched = self._chat_query(
                 "SELECT role, content, created_at FROM chat_messages "
                 "WHERE profile_name = %s AND content LIKE %s "
-                "ORDER BY id DESC LIMIT %s",
+                "ORDER BY created_at DESC, id DESC LIMIT %s",
                 (profile_name, like, int(limit)),
             )
             return [dict(r) for r in reversed(fetched or ())]

@@ -96,7 +96,9 @@ def test_created_at_shown_in_bubbles(log_window):
     }])
     html = log_window.view.toHtml()
     assert "remember me" in html
-    assert "2026-11-19 09:30" in html
+    expected = (datetime.datetime(2026, 11, 19, 9, 30, tzinfo=datetime.timezone.utc)
+                .astimezone().strftime("%Y-%m-%d %H:%M"))
+    assert expected in html  # UTC row rendered in local tz
 
 def test_closed_signal_on_close(log_window, qtbot):
     with qtbot.waitSignal(log_window.closed, timeout=1000):
