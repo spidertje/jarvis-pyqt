@@ -155,12 +155,12 @@ class TestAppConfigPersist:
 
         cfg = AppConfig()
         cfg.db_password = "test-pass-123"
-        cfg.llm_api_key = "freellmapi-0d9e3106805c5ef86625a1a4256b96ca20e494f775ace34f"
+        cfg.llm_api_key = "jarvis-test-key-not-real-0123456789abcdef"
         cfg.save()
 
         assert stored == {
             "db_password": "test-pass-123",
-            "llm_api_key": "freellmapi-0d9e3106805c5ef86625a1a4256b96ca20e494f775ace34f",
+            "llm_api_key": "jarvis-test-key-not-real-0123456789abcdef",
         }
 
     def test_save_skips_placeholder_secrets_in_keychain(self, tmp_path, monkeypatch):
@@ -196,13 +196,13 @@ class TestAppConfigPersist:
         cfg.db_host = "127.0.0.1"
         cfg.db_user = "jarvis"
         cfg.db_password = "test-pass-123"
-        cfg.llm_api_key = "freellmapi-0d9e3106805c5ef86625a1a4256b96ca20e494f775ace34f"
+        cfg.llm_api_key = "jarvis-test-key-not-real-0123456789abcdef"
         cfg.save()
 
         # Now mock Keychain to return the secrets
         keychain_secrets = {
             "db_password": "test-pass-123",
-            "llm_api_key": "freellmapi-0d9e3106805c5ef86625a1a4256b96ca20e494f775ace34f",
+            "llm_api_key": "jarvis-test-key-not-real-0123456789abcdef",
         }
         monkeypatch.setattr(
             "jarvis.config._keychain_retrieve_secret",
@@ -211,7 +211,7 @@ class TestAppConfigPersist:
 
         loaded = AppConfig.load()
         assert loaded.db_password == "test-pass-123"
-        assert loaded.llm_api_key == "freellmapi-0d9e3106805c5ef86625a1a4256b96ca20e494f775ace34f"
+        assert loaded.llm_api_key == "jarvis-test-key-not-real-0123456789abcdef"
         assert loaded.db_host == "127.0.0.1"
         assert loaded.db_user == "jarvis"
 
