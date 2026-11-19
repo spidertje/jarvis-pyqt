@@ -119,3 +119,39 @@ class TestProfileManagerSave:
         manager._db.cursor.side_effect = Exception("boom")
         profile = Profile(name="alice")
         assert manager.save(profile) is False
+
+    def test_append_chat_log_parameterized_insert(self):
+        manager = self._manager_with_mock_db()
+        assert manager.append_chat_log("alice", "user", "hi there") is True
+        cur = manager._db.cursor.return_value.__enter__.return_value
+        sql, params = cur.execute.call_args.args
+        assert "INSERT INTO chat_messages" in sql
+        assert params == ("alice", "user", "hi there")
+
+    def test_chat_log_rows_reversed(self):
+        manager = self._manager_with_mock_db()
+        cur = manager._db.cursor.return_value.__enter__.return_value
+        cur.fetchall.return_value = [
+            {"role": "assistant", "content": "new"},
+            {"role": "user", "content": "old"},
+        ]
+        rows = manager.chat_log_rows("alice")
+        assert rows == [{"role": "user", "content": "old"},
+                        {"role": "assistant", "content": "new"}]
+
+    def test_search_chat_log_parameterized_like(self):
+        manager = self._manager_with_mock_db()
+        cur = manager._db.cursor.return_value.__enter__.return_value
+        cur.fetchall.return_value = [{"role": "user", "content": "weather talk"}]
+        rows = manager.search_chat_log("alice", "weather")
+        assert rows[0]["content"] == "weather talk"
+        sql, params = cur.execute.call_args.args
+        assert "LIKE %s" in sql
+        assert params == ("alice", "%weather%", 100)
+
+    def test_chat_log_read_failure_degrades_empty(self):
+        manager = self._manager_with_mock_db()
+        manager._db.cursor.side_effect = Exception("boom")
+        assert manager.chat_log_rows("alice") == []
+        assert manager.search_chat_log("alice", "x") == []
+        assert manager.append_chat_log("alice", "user", "x") is False

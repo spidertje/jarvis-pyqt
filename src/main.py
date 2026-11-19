@@ -777,8 +777,41 @@ class JarvisApp(QWidget):
                 getattr(self.agent.config, "assistant_name", "Jarvis"))
             self.chat_log.send_requested.connect(self._send_from_chat_log)
             self.chat_log.closed.connect(lambda: self.chat_log_btn.setChecked(False))
-            self.chat_log.set_history(list(self.agent._messages))
+            self.chat_log.search_requested.connect(self._search_chat_log)
+            self.chat_log.search_cleared.connect(self._resync_chat_log_view)
+            self._resync_chat_log_view()
         return self.chat_log
+
+    def _chat_log_rows(self) -> list:
+        """Display source: DB chat_messages for the active profile (full,
+        searchable log), falling back to the in-memory LLM context when no
+        DB/rows are available."""
+        prof = getattr(self.agent, "_active_profile", None)
+        if prof is not None:
+            try:
+                rows = self.agent.profiles.chat_log_rows(prof.name)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"chat log seed failed: {e}")
+                rows = []
+            if rows:
+                return rows
+        return list(self.agent._messages)
+
+    def _resync_chat_log_view(self) -> None:
+        win = getattr(self, "chat_log", None)
+        if win is not None:
+            win.set_history(self._chat_log_rows())
+
+    def _search_chat_log(self, needle: str) -> None:
+        win = getattr(self, "chat_log", None)
+        if win is None:
+            return
+        prof = getattr(self.agent, "_active_profile", None)
+        if prof is None:
+            win.show_results(needle, [])
+            return
+        # GUI-thread DB read; pymysql here mirrors the Settings dialog usage.
+        win.show_results(needle, self.agent.profiles.search_chat_log(prof.name, needle))
 
     def _toggle_chat_log(self) -> None:
         win = self._ensure_chat_log()
@@ -787,7 +820,7 @@ class JarvisApp(QWidget):
             self.chat_log_btn.setChecked(False)
         else:
             # Re-sync committed history each time the window opens.
-            win.set_history(list(self.agent._messages))
+            self._resync_chat_log_view()
             win.show()
             win.raise_()
             win.activateWindow()
@@ -807,19 +840,20 @@ class JarvisApp(QWidget):
             return
         if state == JarvisState.LISTENING:
             win.clear_live()
-            win.set_history(list(self.agent._messages))
+            self._resync_chat_log_view()
         elif state == JarvisState.IDLE:
-            # Turn finished — fold it into committed history.
+            # Turn finished — fold it into committed history (DB-backed, so
+            # greetings and turns beyond the in-memory cap stay visible).
             win.clear_live()
-            win.set_history(list(self.agent._messages))
+            self._resync_chat_log_view()
 
     def _resync_chat_log_profile(self) -> None:
-        """Profile switch replaced agent._messages — reload the log window."""
+        """Profile switch replaced agent history — reload the log window."""
         win = getattr(self, "chat_log", None)
         if win is None:
             return
         win.clear_live()
-        win.set_history(list(self.agent._messages))
+        self._resync_chat_log_view()
         win.set_assistant_name(getattr(self.agent.config, "assistant_name", "Jarvis"))
 
     def _on_panel_user_text(self, text: str):
@@ -970,6 +1004,10 @@ class JarvisApp(QWidget):
         # (previous turns stay readable in the scroll history).
         if state == JarvisState.LISTENING:
             self.panels.begin_turn()
+            self._live_reply_full = ""
+        elif state == JarvisState.THINKING:
+            # Text-chat turns never pass through LISTENING — reset the full
+            # reply accumulator here too, or streamed replies concatenate.
             self._live_reply_full = ""
         self._sync_chat_log_state(state)
         state_colors = {

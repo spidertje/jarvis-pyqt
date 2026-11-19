@@ -188,6 +188,99 @@ class ProfileManager:
                     raise
         return self._db
 
+    def _ensure_chat_log_table(self, db) -> bool:
+        """Create the chat_messages table on first use (idempotent).
+
+        One row per conversation turn (voice, text or greeting) — the
+        searchable history behind the chat window. Independent from the
+        profiles.chat_history JSON blob, which stays the capped LLM context.
+        """
+        if getattr(self, "_chat_log_ready", False):
+            return True
+        try:
+            with db.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS chat_messages (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        profile_name VARCHAR(100) NOT NULL,
+                        role VARCHAR(16) NOT NULL,
+                        content MEDIUMTEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        INDEX idx_profile_time (profile_name, created_at),
+                        INDEX idx_profile_id (profile_name, id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+            db.commit()
+            self._chat_log_ready = True
+            return True
+        except Exception as e:  # noqa: BLE001 — chat log is optional, profiles must survive
+            logger.warning(f"chat_messages table unavailable: {e}")
+            return False
+
+    def _chat_query(self, sql: str, params: tuple, fetch: bool = True):
+        """Run a chat_messages query; self-heals a missing table once.
+
+        Keeps the normal path to exactly one execute() (existing mock-based
+        tests count calls) while auto-creating the table on installs that
+        never ran sql/005.
+        """
+        for attempt in (0, 1):
+            try:
+                db = self._get_db()
+                with db.cursor() as cur:
+                    cur.execute(sql, params)
+                    rows = cur.fetchall() if fetch else None
+                if not fetch:
+                    db.commit()
+                return rows
+            except Exception:
+                if attempt == 0 and self._ensure_chat_log_table(getattr(self, "_db", None)):
+                    continue
+                raise
+
+    def append_chat_log(self, profile_name: str, role: str, content: str) -> bool:
+        """Insert one turn into the searchable chat log."""
+        try:
+            self._chat_query(
+                "INSERT INTO chat_messages (profile_name, role, content) VALUES (%s, %s, %s)",
+                (profile_name, role, content),
+                fetch=False,
+            )
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"chat log append failed: {e}")
+            return False
+
+    def chat_log_rows(self, profile_name: str, limit: int = 200) -> list[dict]:
+        """Most recent turns for a profile, oldest first (for the chat window)."""
+        try:
+            fetched = self._chat_query(
+                "SELECT role, content, created_at FROM chat_messages "
+                "WHERE profile_name = %s ORDER BY id DESC LIMIT %s",
+                (profile_name, int(limit)),
+            )
+            return [dict(r) for r in reversed(fetched or ())]
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"chat log read failed: {e}")
+            return []
+
+    def search_chat_log(self, profile_name: str, needle: str, limit: int = 100) -> list[dict]:
+        """Case-insensitive substring search over the profile's chat history."""
+        like = f"%{needle}%"
+        try:
+            fetched = self._chat_query(
+                "SELECT role, content, created_at FROM chat_messages "
+                "WHERE profile_name = %s AND content LIKE %s "
+                "ORDER BY id DESC LIMIT %s",
+                (profile_name, like, int(limit)),
+            )
+            return [dict(r) for r in reversed(fetched or ())]
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"chat log search failed: {e}")
+            return []
+
     def load_all(self) -> list[Profile]:
         """Load all profiles from DB."""
         self._profiles.clear()

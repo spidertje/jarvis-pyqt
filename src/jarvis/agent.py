@@ -233,6 +233,22 @@ class JarvisAgent:
             trimmed.pop(0)
         return trimmed
 
+    def _log_chat(self, role: str, content: str) -> None:
+        """Persist one conversation turn to the MariaDB chat_messages table.
+
+        Display/search history is DB-backed and independent of the capped
+        in-memory LLM context (_messages): greetings, text turns and voice
+        turns all land here, search works over the full log, and nothing
+        here ever leaks into a prompt.
+        """
+        prof = self._active_profile
+        if not prof or not content:
+            return
+        try:
+            self.profiles.append_chat_log(prof.name, role, content)
+        except Exception as e:  # noqa: BLE001 (chat log must never break a turn)
+            logger.warning(f"chat log insert failed: {e}")
+
     def _append_message(self, role: str, content: str) -> None:
         """Append to history and keep it within the cap in-place."""
         self._messages.append({"role": role, "content": content})
@@ -415,7 +431,9 @@ class JarvisAgent:
             return False
         greeting = f"Hello {name}!"
         logger.info(f"Greeting: {greeting!r}")
-        # Mirror into the transcript/chat-log like a real turn would.
+        # Mirror into the transcript/chat-log like a real turn would, and
+        # persist the row so the chat window keeps it after the fold.
+        self._log_chat("assistant", greeting)
         self._emit_reply_text(greeting)
         self._set_state(JarvisState.SPEAKING)
         try:
@@ -624,6 +642,7 @@ class JarvisAgent:
         # Think — stream tokens, speak each complete sentence as it arrives.
         self._set_state(JarvisState.THINKING)
         self._append_message("user", text)
+        self._log_chat("user", text)
         self._stop_evt.clear()
         self._emit_user_text(text)
 
@@ -733,6 +752,8 @@ class JarvisAgent:
         reply = " ".join(spoken).strip()
         if not interrupted and reply:
             self._append_message("assistant", reply)
+        if reply:
+            self._log_chat("assistant", reply)
         if self._active_profile and (reply or not interrupted):
             self._active_profile.chat_history = list(self._messages)
             if reply:
@@ -749,9 +770,13 @@ class JarvisAgent:
         self._set_state(JarvisState.THINKING)
         prompt = system_prompt or self._system_prompt
         self._append_message("user", user_text)
+        self._log_chat("user", user_text)
+        self._emit_user_text(user_text)
         reply = await self.chat.chat(self._messages, system_prompt=prompt)
         if reply:
             self._append_message("assistant", reply)
+            self._log_chat("assistant", reply)
+            self._emit_reply_text(reply)
         self._set_state(JarvisState.IDLE)
         return reply or ""
 

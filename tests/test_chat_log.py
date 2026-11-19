@@ -60,6 +60,44 @@ def test_send_empty_ignored(log_window):
     assert calls == []
 
 
+def test_search_signal_and_results(log_window, qtbot):
+    log_window.set_history([{"role": "user", "content": "alpha"},
+                            {"role": "assistant", "content": "beta"}])
+    with qtbot.waitSignal(log_window.search_requested, timeout=1000) as blocker:
+        log_window.search.setText("alpha")
+        log_window._on_search()
+    assert blocker.args == ["alpha"]
+    # host wires show_results; simulate what main.py does
+    log_window.show_results("alpha", [{"role": "user", "content": "alpha"}])
+    html = log_window.view.toHtml()
+    assert "alpha" in html and "beta" not in html
+    assert "Search:" in log_window.title_label.text()
+
+
+def test_empty_search_emits_cleared(log_window, qtbot):
+    log_window.show_results("q", [{"role": "user", "content": "q row"}])
+    with qtbot.waitSignal(log_window.search_cleared, timeout=1000):
+        log_window.search.setText("")
+        log_window._on_search()
+
+
+def test_set_history_exits_search_mode(log_window):
+    log_window.show_results("q", [{"role": "user", "content": "q"}])
+    log_window.set_history([{"role": "assistant", "content": "normal"}])
+    assert log_window.title_label.text() == "Chat"
+    assert "normal" in log_window.view.toHtml()
+
+
+def test_created_at_shown_in_bubbles(log_window):
+    import datetime
+    log_window.set_history([{
+        "role": "user", "content": "remember me",
+        "created_at": datetime.datetime(2026, 11, 19, 9, 30),
+    }])
+    html = log_window.view.toHtml()
+    assert "remember me" in html
+    assert "2026-11-19 09:30" in html
+
 def test_closed_signal_on_close(log_window, qtbot):
     with qtbot.waitSignal(log_window.closed, timeout=1000):
         log_window.close()
