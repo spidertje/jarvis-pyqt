@@ -319,7 +319,7 @@ class SettingsDialog(QDialog):
 
         # Host
         lbl, host_field = self._make_field(
-            "Server Host:", config.stt.host if config.stt else "192.168.55.41", "192.168.55.41"
+            "Server Host:", config.stt.host if config.stt else "127.0.0.1", "127.0.0.1"
         )
         layout.addWidget(lbl)
         layout.addWidget(host_field)
@@ -460,7 +460,7 @@ class SettingsDialog(QDialog):
 
         # Host
         lbl, host_field = self._make_field(
-            "Server Host:", config.tts.host if config.tts else "192.168.55.41", "192.168.55.41"
+            "Server Host:", config.tts.host if config.tts else "127.0.0.1", "127.0.0.1"
         )
         layout.addWidget(lbl)
         layout.addWidget(host_field)
@@ -712,7 +712,7 @@ class SettingsDialog(QDialog):
         db_host = ""
         db_port = "3306"
         db_name = "jarvis"
-        db_user = "root"
+        db_user = "jarvis"
         db_password = ""
         if self.app_config:
             db_host = self.app_config.db_host or ""
@@ -728,10 +728,10 @@ class SettingsDialog(QDialog):
             db_password = self.agent_config.profile_db_password or ""
 
         fields = [
-            ("Host:", db_host, "192.168.55.41"),
+            ("Host:", db_host, "127.0.0.1"),
             ("Port:", db_port, "3306"),
             ("Database:", db_name, "jarvis"),
-            ("User:", db_user, "root"),
+            ("User:", db_user, "jarvis"),
             ("Password:", db_password, ""),
         ]
 

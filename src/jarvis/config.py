@@ -163,16 +163,16 @@ class AppConfig:
     """Persistent user configuration (saved to disk)."""
 
     # LLM
-    llm_base_url: str = "http://192.168.55.179:8642/v1"
+    llm_base_url: str = "http://127.0.0.1:8080/v1"
     llm_api_key: str = ""
     llm_model: str = "auto"
 
     # STT (Wyoming)
-    stt_host: str = "192.168.55.41"
+    stt_host: str = "127.0.0.1"
     stt_port: int = 10300
 
     # TTS (Wyoming)
-    tts_host: str = "192.168.55.41"
+    tts_host: str = "127.0.0.1"
     tts_port: int = 10200
     tts_voice: str = "en_US-lessac-medium"
 
@@ -180,10 +180,10 @@ class AppConfig:
     audio_output_device: int = -1
 
     # Database
-    db_host: str = "192.168.55.41"
+    db_host: str = "127.0.0.1"
     db_port: int = 3306
     db_name: str = "jarvis"
-    db_user: str = "root"
+    db_user: str = "jarvis"
     db_password: str = ""
 
     # Face recognition

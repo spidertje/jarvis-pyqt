@@ -11,7 +11,7 @@ class TestWhisperSTT:
     def test_defaults(self):
         """WyomingConfig should have standard Whisper defaults."""
         cfg = WyomingConfig()
-        assert cfg.host == "192.168.55.41"
+        assert cfg.host == "127.0.0.1"
         assert cfg.port == 10300
         assert cfg.sample_rate == 16000
         assert cfg.device is None

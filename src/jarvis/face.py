@@ -5,7 +5,7 @@ Detects and recognizes faces from webcam using LBPH (Local Binary Patterns
 Histograms) algorithm. Trained models stored as LONGBLOB in MariaDB.
 
 Usage:
-    recognizer = FaceRecognizer(camera_index=0, db_host='192.168.55.41')
+    recognizer = FaceRecognizer(camera_index=0, db_host='127.0.0.1')
     name = recognizer.recognize(frame)  # returns name or None
     recognizer.add(name, samples)  # train on samples
     names = recognizer.list_faces()  # list known faces

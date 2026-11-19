@@ -103,7 +103,7 @@ class JarvisAgent:
     Supports profile switching based on face recognition.
     """
 
-    _DEFAULT_LLM_URL = "http://192.168.55.179:8642/v1"
+    _DEFAULT_LLM_URL = "http://127.0.0.1:8080/v1"
 
     def __init__(self, config: AgentConfig | None = None, hud=None):
         self.config = config or AgentConfig()

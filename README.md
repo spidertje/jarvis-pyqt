@@ -5,18 +5,10 @@ PyQt6 Arc Reactor HUD with voice interaction.
 ## Stack
 
 - **HUD**: switchable frontends — Arc Reactor, Smoke Face, or three solid emotive avatars (Smiley / Goddess / Robot); mouth lip-syncs to TTS PCM, emotion set by LLM `[emo:x]` tags
-- **STT**: Faster-whisper via Wyoming protocol (port 10300 on 192.168.55.41)
-- **TTS**: Piper via Wyoming protocol (port 10200 on 192.168.55.41)
-- **Chat**: OpenAI-compatible API (port 3001 on 192.168.55.43)
+- **STT**: Faster-whisper via Wyoming protocol (Wyoming host:port via Settings; default 127.0.0.1:10300)
+- **TTS**: Piper via Wyoming protocol (default 127.0.0.1:10200)
+- **Chat**: OpenAI-compatible API (base URL + key via Settings/.env)
 - **Audio**: sounddevice for PCM playback
-
-## Phases
-
-1. **Phase 1** — Arc Reactor HUD overlay with state machine
-2. **Phase 2** — TTS/STT integration (piper + whisper via Wyoming)
-3. **Phase 3** — Chat with LLM backend + voice mode
-4. **Phase 4** — Face recognition (OpenCV LBPH + MariaDB)
-5. **Phase 5** — Profile switching + polish
 
 ## HUD Frontends
 
@@ -102,9 +94,9 @@ python3 src/main.py
 
 | Service | Host | Port | Protocol |
 |---------|------|------|----------|
-| Piper TTS | 192.168.xx.xx | 10200 | Wyoming |
-| Whisper STT | 192.168.xx.xx | 10300 | Wyoming |
-| LLM API | 192.168.xx.xx | 8642 | OpenAI |
+| Piper TTS | 127.0.0.1 | 10200 | Wyoming |
+| Whisper STT | 127.0.0.1 | 10300 | Wyoming |
+| LLM API | 127.0.0.1 | 8080 | OpenAI |
 
 ## Configuration
 

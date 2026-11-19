@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class WyomingConfig:
     """Wyoming protocol server configuration."""
 
-    host: str = "192.168.55.41"
+    host: str = "127.0.0.1"
     port: int = 10200
     sample_rate: int = 16000
     width: int = 2  # 16-bit

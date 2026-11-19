@@ -24,7 +24,7 @@ class TestAppConfigDefaults:
     def test_defaults(self):
         """AppConfig should have sensible default values."""
         cfg = AppConfig()
-        assert cfg.llm_base_url == "http://192.168.55.179:8642/v1"
+        assert cfg.llm_base_url == "http://127.0.0.1:8080/v1"
         assert cfg.llm_model == "auto"
         assert cfg.tts_voice == "en_US-lessac-medium"
         assert cfg.db_name == "jarvis"
@@ -154,12 +154,12 @@ class TestAppConfigPersist:
         monkeypatch.setattr("jarvis.config._keychain_retrieve_secret", lambda s: None)
 
         cfg = AppConfig()
-        cfg.db_password = "rocklobster"
+        cfg.db_password = "test-pass-123"
         cfg.llm_api_key = "freellmapi-0d9e3106805c5ef86625a1a4256b96ca20e494f775ace34f"
         cfg.save()
 
         assert stored == {
-            "db_password": "rocklobster",
+            "db_password": "test-pass-123",
             "llm_api_key": "freellmapi-0d9e3106805c5ef86625a1a4256b96ca20e494f775ace34f",
         }
 
@@ -193,15 +193,15 @@ class TestAppConfigPersist:
 
         # Write a config file with redacted passwords
         cfg = AppConfig()
-        cfg.db_host = "192.168.55.41"
-        cfg.db_user = "root"
-        cfg.db_password = "rocklobster"
+        cfg.db_host = "127.0.0.1"
+        cfg.db_user = "jarvis"
+        cfg.db_password = "test-pass-123"
         cfg.llm_api_key = "freellmapi-0d9e3106805c5ef86625a1a4256b96ca20e494f775ace34f"
         cfg.save()
 
         # Now mock Keychain to return the secrets
         keychain_secrets = {
-            "db_password": "rocklobster",
+            "db_password": "test-pass-123",
             "llm_api_key": "freellmapi-0d9e3106805c5ef86625a1a4256b96ca20e494f775ace34f",
         }
         monkeypatch.setattr(
@@ -210,10 +210,10 @@ class TestAppConfigPersist:
         )
 
         loaded = AppConfig.load()
-        assert loaded.db_password == "rocklobster"
+        assert loaded.db_password == "test-pass-123"
         assert loaded.llm_api_key == "freellmapi-0d9e3106805c5ef86625a1a4256b96ca20e494f775ace34f"
-        assert loaded.db_host == "192.168.55.41"
-        assert loaded.db_user == "root"
+        assert loaded.db_host == "127.0.0.1"
+        assert loaded.db_user == "jarvis"
 
     def test_load_falls_back_when_keychain_empty(self, tmp_path, monkeypatch, mock_keychain):
         """load() should fall back to env/default when Keychain is empty."""
