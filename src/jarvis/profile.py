@@ -190,6 +190,14 @@ class ProfileManager:
                     raise
         return self._db
 
+    def get_db(self) -> pymysql.Connection:
+        """Public accessor for the shared MariaDB connection.
+
+        Lets other jarvis tables (hud_voice store) reuse this connection
+        and its auto-reconnect logic instead of opening a second one.
+        """
+        return self._get_db()
+
     def _ensure_chat_log_table(self, db) -> bool:
         """Create the chat_messages table on first use (idempotent).
 

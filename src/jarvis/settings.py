@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from jarvis.config import FRONTS
 from jarvis.face import FaceConfig
 from jarvis.probe import probe_services
 from jarvis.profile import PALETTE_HUES
@@ -517,10 +518,24 @@ class SettingsDialog(QDialog):
         return group
 
     def _populate_voice_combo_simple(self):
-        """Populate voice combo box with common voices."""
-        # Clear existing items
+        """Populate the global (default) voice combo box."""
         self.voice_combo.clear()
-        
+        self._add_voice_groups_to(self.voice_combo)
+
+        # Set current voice by itemData (never by hard-coded index)
+        current_voice = getattr(self.agent_config, "tts_voice", "en_US-lessac-medium") if self.agent_config else "en_US-lessac-medium"
+        self._select_voice_in(self.voice_combo, current_voice)
+
+        # Connect signal AFTER populating (construction must not fire writes)
+        self.voice_combo.currentIndexChanged.connect(self._on_voice_changed)
+
+    def _add_voice_groups_to(self, combo):
+        """Fill ``combo`` with language headers + voice entries (no clear).
+
+        Item data contract: headers are {"type": "header"}, voices are
+        {"type": "voice", "name": <piper voice>} — all handlers must read
+        itemData, never positions.
+        """
         # Add common voices grouped by language for better UX
         voice_groups = {
             "English (US)": [
@@ -632,27 +647,37 @@ class SettingsDialog(QDialog):
         # Add voice groups as sections
         for language, voices in voice_groups.items():
             # Add language header
-            self.voice_combo.addItem(f"--- {language} ---")
-            self.voice_combo.setItemData(self.voice_combo.count() - 1, 
-                                       {"type": "header", "language": language})
-            
+            combo.addItem(f"--- {language} ---")
+            combo.setItemData(combo.count() - 1,
+                              {"type": "header", "language": language})
+
             # Add voices in this language
             for voice in voices:
-                self.voice_combo.addItem(f"  {voice}")
-                self.voice_combo.setItemData(self.voice_combo.count() - 1, 
-                                           {"type": "voice", "name": voice})
-        
-        # Set current voice
-        current_voice = getattr(self.agent_config, "tts_voice", "en_US-lessac-medium") if self.agent_config else "en_US-lessac-medium"
-        index = self.voice_combo.findText(current_voice)
+                combo.addItem(f"  {voice}")
+                combo.setItemData(combo.count() - 1,
+                                  {"type": "voice", "name": voice})
+
+    @staticmethod
+    def _select_voice_in(combo, voice_name):
+        """Select ``voice_name`` in a combo built by _add_voice_groups_to.
+
+        Matches on itemData (robust), with the legacy indented-text lookup
+        kept as a fallback.
+        """
+        if not voice_name or not isinstance(voice_name, str):
+            return
+        for i in range(combo.count()):
+            data = combo.itemData(i)
+            if isinstance(data, dict) and data.get("type") == "voice" \
+                    and data.get("name") == voice_name:
+                combo.setCurrentIndex(i)
+                return
+        index = combo.findText(voice_name)
         if index < 0:
             # Try with prefix (voices are indented with 2 spaces)
-            index = self.voice_combo.findText(f"  {current_voice}")
+            index = combo.findText(f"  {voice_name}")
         if index >= 0:
-            self.voice_combo.setCurrentIndex(index)
-            
-        # Connect signal
-        self.voice_combo.currentIndexChanged.connect(self._on_voice_changed)
+            combo.setCurrentIndex(index)
 
     def _on_voice_changed(self, index: int):
         """Called when voice selection changes."""
@@ -1181,20 +1206,65 @@ class SettingsDialog(QDialog):
 
         self.frontend_combo = QComboBox()
         self.frontend_combo.setFixedHeight(30)
-        self.frontend_combo.addItem("Arc Reactor", "arc")
-        self.frontend_combo.addItem("Smoke Face (emotive)", "smoke")
-        self.frontend_combo.addItem("Smiley (solid)", "smiley")
-        self.frontend_combo.addItem("Goddess (solid)", "goddess")
-        self.frontend_combo.addItem("Robot (solid)", "bender")
+        # First entry = default canvas (config.FRONTS is the source of truth)
+        for fe_key, fe_label in FRONTS:
+            self.frontend_combo.addItem(fe_label, fe_key)
         self.frontend_combo.setStyleSheet(
             "QComboBox{background:rgba(0,0,0,60);border:1px solid rgba(0,200,255,80);"
             "border-radius:4px;padding:6px 10px;color:#e0e0e0;font-size:13px;}"
         )
         cur_fe = getattr(config, "frontend", "arc") or "arc"
-        idx = {"arc": 0, "smoke": 1, "smiley": 2, "goddess": 3, "bender": 4}.get(cur_fe, 0)
-        self.frontend_combo.setCurrentIndex(idx)
+        idx = self.frontend_combo.findData(cur_fe)
+        if idx >= 0:
+            self.frontend_combo.setCurrentIndex(idx)
         self.frontend_combo.currentIndexChanged.connect(self._on_frontend_changed)
         layout.addWidget(self.frontend_combo)
+        layout.addSpacing(10)
+
+        # ── Per-canvas voice overrides (DB-primary, hud_voice table) ──
+        # The TTS tab's Voice Model is the DEFAULT for every canvas; each
+        # canvas may override it here. "Use default" clears the override.
+        cv_lbl = QLabel("Canvas Voice (override per HUD canvas):")
+        cv_lbl.setStyleSheet("color: rgba(180, 200, 220, 200); font-size: 12px;")
+        layout.addWidget(cv_lbl)
+
+        store = getattr(self.agent, "hud_voices", None)
+        overrides = store.snapshot() if store is not None else {}
+        default_voice = getattr(config, "tts_voice", "")
+        default_label = (
+            f"Use default ({default_voice})"
+            if isinstance(default_voice, str) and default_voice
+            else "Use default"
+        )
+        self.canvas_voice_combos: dict[str, QComboBox] = {}
+        for fe_key, fe_label in FRONTS:
+            row = QHBoxLayout()
+            name_lbl = QLabel(fe_label)
+            name_lbl.setStyleSheet("color: rgba(160, 180, 200, 180); font-size: 11px;")
+            name_lbl.setFixedWidth(160)
+            combo = QComboBox()
+            combo.setFixedHeight(26)
+            combo.setStyleSheet(
+                "QComboBox{background:rgba(0,0,0,60);border:1px solid rgba(0,200,255,80);"
+                "border-radius:4px;padding:4px 8px;color:#e0e0e0;font-size:12px;}"
+                "QComboBox QAbstractItemView{background:rgba(0,0,0,80);"
+                "selection-background-color:rgba(0,200,255,150);}"
+            )
+            combo.addItem(default_label, {"type": "default"})
+            self._add_voice_groups_to(combo)
+            override = overrides.get(fe_key) if hasattr(overrides, "get") else None
+            if isinstance(override, str) and override:
+                self._select_voice_in(combo, override)
+            else:
+                combo.setCurrentIndex(0)
+            # Connect AFTER populating so construction never writes to the DB
+            combo.currentIndexChanged.connect(
+                lambda _idx, fe=fe_key: self._on_canvas_voice_changed(fe)
+            )
+            row.addWidget(name_lbl)
+            row.addWidget(combo, stretch=1)
+            layout.addLayout(row)
+            self.canvas_voice_combos[fe_key] = combo
         layout.addSpacing(10)
 
         # Palette selector
@@ -1301,6 +1371,32 @@ class SettingsDialog(QDialog):
 
         layout.addStretch()
         return group
+
+    def _on_canvas_voice_changed(self, frontend: str) -> None:
+        """Per-canvas voice selection → write override to the DB store.
+
+        'Use default' clears the override so the canvas inherits the
+        TTS-tab default voice. Reads itemData, never the combo index.
+        """
+        combo = self.canvas_voice_combos.get(frontend)
+        if combo is None:
+            return
+        data = combo.currentData()
+        store = getattr(self.agent, "hud_voices", None)
+        if store is None:
+            return
+        if isinstance(data, dict) and data.get("type") == "voice" and data.get("name"):
+            store.set(frontend, data["name"])
+        else:
+            store.clear(frontend)
+        # Live-apply when the edited canvas is the one on screen.
+        active = getattr(self.agent_config, "frontend", "arc")
+        if active == frontend and self.agent is not None \
+                and hasattr(self.agent, "apply_frontend_voice"):
+            self.agent.apply_frontend_voice(frontend)
+        logger.info(f"Canvas voice '{frontend}': "
+                    f"{data.get('name') if isinstance(data, dict) else None} "
+                    f"(default if None)")
 
     def _on_frontend_changed(self, index: int):
         """Switch HUD frontend live (any of the registered frontends)."""
@@ -1504,6 +1600,14 @@ class SettingsDialog(QDialog):
             self.app_config.palette_index = self.agent_config.palette_index
             self.app_config.contrast_boost = self.agent_config.contrast_boost
             self.app_config.frontend = getattr(self.agent_config, "frontend", "arc")
+            # Mirror per-canvas voice overrides into config.json (the DB
+            # hud_voice table stays the source of truth; this is offline
+            # fallback only).
+            if self.agent is not None:
+                snap = getattr(self.agent, "hud_voices", None)
+                snap = snap.snapshot() if snap is not None else None
+                if isinstance(snap, dict):
+                    self.app_config.hud_voices = snap
 
         # Persist to disk
         if self.app_config:

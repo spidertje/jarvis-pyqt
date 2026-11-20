@@ -42,7 +42,7 @@ from jarvis.icons import icon as svg_icon, svg as svg_markup
 
 from jarvis.agent import AgentConfig, JarvisAgent
 from jarvis.chat_log import ChatLogWindow
-from jarvis.config import AppConfig
+from jarvis.config import AppConfig, FRONT_KEYS
 from jarvis.face import FaceConfig
 from jarvis.face_screen import FaceRecScreen
 from jarvis.hud_overlay import HUDOverlay
@@ -310,6 +310,8 @@ class JarvisApp(QWidget):
         agent_config.palette_index = self.app_config.palette_index
         agent_config.contrast_boost = self.app_config.contrast_boost
         agent_config.frontend = self.app_config.frontend
+        # Per-canvas voice overrides (offline mirror; DB is re-read on top)
+        agent_config.hud_voices = dict(self.app_config.hud_voices or {})
         # Assistant name
         agent_config.assistant_name = self.app_config.assistant_name
         # Greeting on face recognition (JARVIS_GREETING=0 disables)
@@ -947,17 +949,20 @@ class JarvisApp(QWidget):
             if self.agent._active_profile:
                 self.hud.set_profile(self.agent._active_profile.name,
                                      self.agent._active_profile.accent_hue)
+            # Canvas switch also swaps the TTS voice (per-canvas override
+            # from hud_voice DB table, else the TTS-tab default).
+            self.agent.apply_frontend_voice(self._frontend)
         except Exception as e:  # noqa: BLE001 (pre-agent startup call)
             logger.debug(f"_apply_frontend sync deferred: {e}")
         if self._frontend != "arc":
             self.hud.raise_()
 
     def _cycle_frontend(self):
-        order = ["arc", "smoke", "smiley", "goddess", "bender"]
+        order = list(FRONT_KEYS)
         try:
             self._frontend = order[(order.index(self._frontend) + 1) % len(order)]
         except ValueError:
-            self._frontend = "arc"
+            self._frontend = order[0]
         try:
             self.app_config.frontend = self._frontend
             self.app_config.save()

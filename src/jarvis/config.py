@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 try:
@@ -23,6 +23,20 @@ except ImportError:
     pass
 
 logger = logging.getLogger(__name__)
+
+# HUD canvases (frontends) in canonical order — THE single source of truth
+# for every frontend dropdown/cycle (main.py, settings.py). The FIRST entry
+# is the default canvas. Every canvas inherits the TTS-tab default voice and
+# may override it per canvas (hud_voice_store, MariaDB hud_voice table).
+FRONTS: tuple[tuple[str, str], ...] = (
+    ("arc", "Arc Reactor"),
+    ("smoke", "Smoke Face (emotive)"),
+    ("smiley", "Smiley (solid)"),
+    ("goddess", "Goddess (solid)"),
+    ("bender", "Robot (solid)"),
+)
+FRONT_KEYS: tuple[str, ...] = tuple(key for key, _ in FRONTS)
+DEFAULT_FRONT: str = FRONT_KEYS[0]
 
 _KEYCHAIN_ACCOUNT = "jarvis-pyqt"
 _KEYCHAIN_SERVICES = {
@@ -193,7 +207,12 @@ class AppConfig:
     # Appearance
     palette_index: int = 0
     contrast_boost: int = 100
-    frontend: str = "arc"  # 'arc' | 'smoke' | 'smiley' | 'goddess' | 'bender'
+    frontend: str = "arc"  # any key in FRONTS (first = default canvas)
+    # Per-canvas TTS voice overrides (canvas key -> voice name).
+    # This is only the offline MIRROR — the MariaDB hud_voice table is the
+    # source of truth (see hud_voice_store.HudVoiceStore); a canvas with no
+    # entry here uses the TTS-tab default (tts_voice).
+    hud_voices: dict = field(default_factory=dict)
     # Assistant
     assistant_name: str = "Jarvis"
 

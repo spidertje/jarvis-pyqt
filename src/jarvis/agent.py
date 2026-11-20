@@ -25,6 +25,7 @@ from .streaming import SentenceBuffer, split_sentences
 from .emotion import EMOTION_PROMPT, EmotionTagFilter, classify_emotion, parse_emotion
 from .stt import WhisperSTT
 from .stt import WyomingConfig as STTConfig
+from .hud_voice_store import HudVoiceStore
 from .tts import PiperTTS
 from .tts import WyomingConfig as TTSConfig
 from .wake_word import WakeWordDetector
@@ -46,6 +47,9 @@ class AgentConfig:
     audio: AudioConfig = field(default_factory=AudioConfig)
     # HUD frontend ('arc' | 'smoke')
     frontend: str = "arc"
+    # Per-canvas TTS voice overrides (canvas key -> voice); offline mirror
+    # of the MariaDB hud_voice table (see HudVoiceStore).
+    hud_voices: dict = field(default_factory=dict)
     # Profile manager — read from env vars only, no hardcoded fallbacks
     profile_db_host: str | None = None
     profile_db_port: int | None = None
@@ -155,7 +159,6 @@ class JarvisAgent:
         self.stt = WhisperSTT(stt_cfg)
         if hasattr(self.config, "tts_voice") and self.config.tts_voice:
             self.config.tts.voice = self.config.tts_voice
-        self.tts = PiperTTS(self.config.tts)
         self.audio = AudioPlayer(self.config.audio)
 
         # Profile manager
@@ -169,6 +172,20 @@ class JarvisAgent:
 
         # Load profiles
         self.profiles.load_all()
+
+        # Per-canvas TTS voice overrides — DB-primary (hud_voice table),
+        # config.json mirror as offline fallback. A canvas without an
+        # override speaks with the TTS-tab default (config.tts_voice).
+        self.hud_voices = HudVoiceStore(
+            self.profiles.get_db,
+            fallback=dict(getattr(self.config, "hud_voices", None) or {}),
+        )
+        self.hud_voices.load_all()
+
+        # TTS: start on the ACTIVE canvas's effective voice so the first
+        # utterance already uses any per-canvas override.
+        self.config.tts.voice = self.effective_voice()
+        self.tts = PiperTTS(self.config.tts)
 
         # Import assistant name from MariaDB (default profile row)
         db_name = self.profiles.get_default_assistant_name()
@@ -446,6 +463,26 @@ class JarvisAgent:
             await asyncio.to_thread(self.audio.play, audio)
         self._set_state(JarvisState.IDLE)
         return True
+
+    # ── Per-canvas TTS voices ───────────────────────────────────────
+    def effective_voice(self, frontend: str | None = None) -> str:
+        """Voice the given canvas should speak with.
+
+        Resolution: per-canvas DB override -> TTS-tab default voice.
+        """
+        fe = frontend or getattr(self.config, "frontend", "") or "arc"
+        return self.hud_voices.get(fe) or self.config.tts.voice
+
+    def apply_frontend_voice(self, frontend: str) -> None:
+        """Point TTS at the given canvas's voice (live, no restart).
+
+        PiperTTS reconnects automatically on the next speak() when the
+        voice changed (voice_changed check in PiperTTS.speak).
+        """
+        self.config.frontend = frontend
+        voice = self.effective_voice(frontend)
+        if self.tts.set_voice(voice):
+            logger.info(f"TTS voice for canvas '{frontend}': {voice}")
 
     def clear_profile(self):
         """Clear active profile (return to defaults)."""
